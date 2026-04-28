@@ -1,0 +1,17 @@
+{
+  "name": "trust-swap",
+  "version": "0.0.0",
+  "description": "Trust-gated settlement on Uniswap. Reference implementation of the gate-then-execute pattern over @synthesis/resolver.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "format": "pnpm -r format"
+  },
+  "license": "MIT"
+}

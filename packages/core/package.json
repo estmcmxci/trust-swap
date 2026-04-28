@@ -1,0 +1,34 @@
+{
+  "name": "@trust-swap/core",
+  "version": "0.0.0",
+  "description": "TrustSwap core — gate-then-execute composition and Uniswap Trading API client",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --outDir dist",
+    "dev": "tsx src/index.ts",
+    "lint": "biome lint --write .",
+    "format": "biome format --write ."
+  },
+  "dependencies": {
+    "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
+    "viem": "^2.33.3",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.19.15",
+    "tsup": "^8.5.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.8.3"
+  },
+  "license": "MIT"
+}

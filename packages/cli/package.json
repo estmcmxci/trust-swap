@@ -1,0 +1,27 @@
+{
+  "name": "@trust-swap/cli",
+  "version": "0.0.0",
+  "description": "TrustSwap CLI — `tru swap`, `tru agent run`",
+  "type": "module",
+  "bin": {
+    "tru": "./dist/index.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --outDir dist",
+    "dev": "tsx src/index.ts",
+    "lint": "biome lint --write .",
+    "format": "biome format --write ."
+  },
+  "dependencies": {
+    "@trust-swap/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.19.15",
+    "tsup": "^8.5.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.8.3"
+  },
+  "license": "MIT"
+}

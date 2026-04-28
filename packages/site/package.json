@@ -1,0 +1,18 @@
+{
+  "name": "@trust-swap/site",
+  "version": "0.0.0",
+  "description": "TrustSwap site — /swap, /agent",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "echo 'Phase 3 scaffolds Next.js. Stub for now.'",
+    "build": "echo 'Phase 3 scaffolds Next.js build. Stub for now.'",
+    "lint": "biome lint --write ."
+  },
+  "dependencies": {
+    "@trust-swap/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4"
+  }
+}

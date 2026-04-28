@@ -1,0 +1,15 @@
+node_modules
+dist
+.next
+.turbo
+.cache
+*.log
+.env
+.env.local
+.env.*.local
+.DS_Store
+.vscode
+.idea
+*.swp
+*.swo
+.synthesis
