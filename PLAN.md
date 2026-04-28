@@ -1,589 +1,534 @@
-# TrustSwap — Trust-Gated Settlement on Uniswap
+# TrustSwap — Reputation-Graded Settlement on Uniswap
 
-A reference implementation of the gate-then-execute pattern: every Uniswap swap is gated by a TRL resolution of the counterparty, signed by a policy-bound agent wallet, and settled through the Uniswap Trading API. Targets the OpenAgents ENS "Best Integration for AI Agents" prize and the Uniswap Foundation "Best API Integration" prize from one codebase.
+A programmable trust layer between any two parties and the Uniswap pools they use. Every swap routes through `TrustSwapRouter`, an on-chain contract that verifies an off-chain trust attestation and applies **tier-graded execution terms** before forwarding to Uniswap's Universal Router. The novel primitive is **reputation-graded settlement** — the trust score is both an enforcement signal (tier-bucketed limits) and a preference signal (each side publishes a RiskPolicy describing what counterparties they'll accept).
 
-TrustSwap is an **application built on TRL**, not a feature of Ensemble itself. It lives in a separate repo (`estmcmxci/trust-swap`) and consumes the TRL primitives (`gate()`, `Signer`) from `@synthesis/resolver` as a library dependency. See `Depends on` below.
+Targets two hackathon prize tracks from one codebase:
 
-## Depends on
-
-This plan assumes the TRL Policy + Signers PR has landed in synthesis. That PR (`plans/trl-policy-and-signers.md`) ships the generic primitives this app composes on top of:
-
-| Symbol | From | Used here for |
-|---|---|---|
-| `gate(profile, policy) → GateDecision` | `@synthesis/resolver` | the trust gate before every swap |
-| `TrustPolicy`, `GateDecision` types | `@synthesis/resolver` | server-action and CLI input shapes |
-| `Signer` interface, `Batch` type | `@synthesis/resolver` | uniform signing across local + Namera |
-| `createLocalSigner({ privateKey, … })` | `@synthesis/resolver` | early-dev fallback |
-| `createNameraSigner({ keystorePath, sessionKeyPath, bundlerUrl, … })` | `@synthesis/resolver` | the production signer for the daemon |
-| `resolve(ensName)`, `TrustProfile` | `@synthesis/resolver` (existing) | resolves the recipient before gating |
-| `ensemble gate <ens>` CLI | `@synthesis/cli` | shell-driven inspection during development |
-
-If any of these symbols don't exist when TrustSwap Phase 0 starts, that's a blocker — finish the synthesis PR first.
-
-The substrate audit (live ENS reads in `layers/identity.ts`, manifest signature verification in `layers/manifest.ts`) is also a synthesis concern, not a TrustSwap concern. It should happen as part of the TRL Policy + Signers PR review, not here.
+- **OpenAgents ENS — Best Integration for AI Agents** ($2,500 / $750 / $500)
+- **Uniswap Foundation — Best API Integration** ($2,500 / $1,500 / $1,000)
 
 ## Positioning
 
-One-line pitch: **swap with people you can prove are who they claim to be.**
+One-line pitch: **reputation-graded settlement — settle with anyone the chain says you should.**
 
-The novel primitive is *trust-gated settlement* — a Uniswap swap that doesn't execute unless the counterparty resolves through TRL at or above a configurable trust tier, with a valid manifest signature and unbroken AIP lineage. The same primitive runs as a CLI command, a web page, an MCP tool, and a long-lived agent daemon on a remote VM.
-
-Three named primitives compose, each doing one job:
+Five primitives compose, each doing one job:
 
 | Layer | Provider | Job |
 |---|---|---|
-| Identity / semantic policy | `@synthesis/resolver` (TRL) | "Is the counterparty who they claim to be, at the tier I require?" |
-| Wallet / imperative policy | `@namera-ai/sdk` over ZeroDev kernel accounts | "Can this session key call this target, with these args, within these gas / rate / time bounds?" |
-| Settlement | Uniswap Trading API | "Quote and execute the swap." |
+| **TRL substrate** | `@synthesis/resolver` (read-only) | "Resolve `<ens>` to a 5-layer `TrustProfile`." |
+| **TrustSwap Oracle** | This repo (off-chain signing service) | "Re-resolve both sides, check published RiskPolicies, sign an attestation." |
+| **TrustSwapRouter** | This repo (Solidity, on-chain) | "Verify the oracle signature, look up tier-bucket terms, forward to Universal Router." |
+| **Uniswap Trading API** | Uniswap Foundation | "Generate optimal swap calldata for the underlying pools." |
+| **Wallet / session-key policy** | `@namera-ai/sdk` over ZeroDev | "Bound what the session key can call, with what value, how often." |
 
-Neither identity nor wallet policy alone is sufficient. Namera enforces *call shape* (target, function, argument conditions, value, gas, rate, time); TRL enforces *meaning* (is this counterparty real, current, and trusted); Uniswap moves the value. Both gates must agree before any user op broadcasts.
-
-Namera is open-source, Apache-2.0, local-first — there is no managed service, no API key, no third-party uptime dependency at the wallet layer. Owner keys live in encrypted local keystores; session keys are issued client-side; policies install lazily into a ZeroDev kernel account on first use. The only runtime dependency Namera introduces is an ERC-4337 bundler (Pimlico, Alchemy, or self-hosted) — that's the same dep any account-abstraction stack carries.
+The router ensures a swap satisfies the *intersection* of (router floor, swapper's tier-derived terms, recipient's published RiskPolicy). Most restrictive wins. Tier `none` is the only outright admission denial — every other tier is admitted with graded terms.
 
 ## Why this hits both prize tracks
 
-### ENS — Best Integration for AI Agents ($2,500 / $750 / $500)
+### ENS — Best Integration for AI Agents
 
 Verbatim prize prompt: *"resolving the agent's address, storing its metadata, gating access, enabling discovery, or coordinating agent-to-agent interaction."*
 
 | Prompt clause | TrustSwap satisfaction |
 |---|---|
-| Resolving the agent's address | `viem.getEnsAddress` on the recipient ENS name, every swap |
-| Storing metadata | Optional `last-trust-snapshot` text record cached on the agent's own ENS |
-| Gating access | The trust tier check *is* the gate — no swap without it |
-| Enabling discovery | `/swap` page resolves and renders the recipient's full TRL profile inline |
-| Coordinating agent-to-agent | Two agents on droplets with mutual TRL gates (stretch) |
+| Resolving the agent's address | `viem.getEnsAddress` on every counterparty, every swap |
+| Storing metadata | `agent-risk-policy` ENS text record — published per-identity |
+| Gating access | The router applies graded terms; tier `none` revoked outright; counterparty RiskPolicy applies additional restrictions |
+| Enabling discovery | `/swap` page resolves and renders the recipient's full TRL profile + their RiskPolicy inline |
+| Coordinating agent-to-agent | Two daemons negotiate autonomously: each fetches the other's RiskPolicy, both must satisfy the other's stated requirements before settlement |
 
-
-### Uniswap Foundation — Best API Integration ($2,500 / $1,500 / $1,000)
+### Uniswap Foundation — Best API Integration
 
 Verbatim prize prompt: *"Agents that trade, coordinate with other agents, or invent primitives we haven't imagined yet."*
 
 | Prompt axis | TrustSwap satisfaction |
 |---|---|
-| Real onchain execution | Canonical 3-step flow: `/check_approval → /quote → /swap`, signed by a Namera session key, broadcast to Base mainnet |
-| Agentic context | Long-lived daemon on a remote VM signs swaps autonomously inside policy bounds |
-| Coordinate with other agents | A2A demo: two ENS-named agents resolve each other and settle via mutual TRL approval (stretch) |
-| Novel primitive | "Trust-gated settlement" — a composable `resolve → gate → execute` pattern other Trading API consumers can adopt |
-| FEEDBACK.md substance | We compose, not just call — the doc surfaces real friction (no native ENS in API inputs, no policy hook surface, quote freshness vs. multi-step pre-flight) |
+| Real onchain execution | Trading API generates the swap calldata; our `TrustSwapRouter` wraps it on Base mainnet |
+| Agentic context | Long-lived daemon on a remote VM signs swaps autonomously inside session-key policy bounds + router-enforced trust bounds |
+| Coordinate with other agents | Two ENS-named agents discover each other's RiskPolicy via ENS, gate each other bidirectionally, settle through the same shared router |
+| **Novel primitive** | **"Reputation-graded gated routing" — a programmable trust layer in front of any AMM**, with bidirectional preference signaling. Other Trading API consumers can adopt the gated-router pattern (Solidity contract in this repo) or the off-chain attestation model (oracle service spec) independently. |
+| FEEDBACK.md substance | We compose, not just call — the doc surfaces real friction (no native ENS in API inputs, attestation-to-quote binding gaps, etc.) |
 
 ## System architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│   USER / AGENT  ─────────────────────────────────────────────────►  │
-│                                                                     │
-│   Calls one of three surfaces:                                      │
-│     • CLI:     tru swap <ens> --amount <n>                          │
-│     • Site:    /swap (Next.js page on trust-swap/packages/site)     │
-│     • MCP:     trust-swap-mcp tool "trust_gated_swap"               │
-│     • Daemon:  tru agent run (long-lived loop on a VM)              │
-│                                                                     │
-└────────────────┬────────────────────────────────────────────────────┘
-                 │
-                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│   POLICY LAYER (off-chain, semantic)                                │
-│                                                                     │
-│   resolve(recipientEns) ─►  TrustProfile                            │
-│   gate(profile, policy) ─►  { allow: boolean, reason: string }      │
-│                                                                     │
-│   Policy fields:                                                    │
-│     minTier:        TrustTier            // e.g. "verified"         │
-│     requireLineage: boolean              // walk AIP prev chain     │
-│     requireSig:     boolean              // verify manifest sig     │
-│     allowSelf:      boolean              // permit recipient = self │
-│                                                                     │
-└────────────────┬────────────────────────────────────────────────────┘
-                 │ allow
-                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│   QUOTE LAYER (Uniswap Trading API)                                 │
-│                                                                     │
-│   POST /check_approval                                              │
-│   POST /quote      { swapper, recipient, tokenIn, tokenOut, ... }   │
-│   POST /swap       (spread quote response, strip permitData=null)   │
-│                                                                     │
-└────────────────┬────────────────────────────────────────────────────┘
-                 │ signed tx
-                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│   SIGNING / WALLET LAYER (on-chain, imperative)                     │
-│                                                                     │
-│   ZeroDev Kernel Account (created via @namera-ai/sdk/account)       │
-│      ◄── ECDSA owner key (encrypted keystore, off-droplet)          │
-│      │                                                              │
-│      ├─ Session Key (ECDSA, serialized + sent to droplet)           │
-│      │                                                              │
-│      └─ Permission Validator (ZeroDev) enforcing:                   │
-│           toCallPolicy:      Universal Router execute() only,       │
-│                              with ParamCondition on inputs[]        │
-│           toGasPolicy:       allowed = parseEther("0.005")          │
-│           toRateLimitPolicy: count = 1, interval = 3600s            │
-│           toTimestampPolicy: validUntil = now + 86400               │
-│                                                                     │
-│   Broadcast via ERC-4337 UserOperation through Pimlico bundler      │
-│                                                                     │
-└────────────────┬────────────────────────────────────────────────────┘
-                 │ broadcast
-                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                                                                     │
-│   BASE MAINNET — Universal Router 0x6ff5693b9...d299b43             │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│  USER / AGENT                                                  │
+│   • CLI:   tru swap <recipient.eth> --amount <n>               │
+│   • Site:  /swap (Next.js)                                     │
+│   • MCP:   trust-swap-mcp tool "trust_gated_swap"              │
+│   • Daemon: tru agent run (long-lived loop on a VM)            │
+└──────────────────────────┬─────────────────────────────────────┘
+                           │
+        ┌──────────────────┼──────────────────┐
+        ▼                  ▼                  ▼
+┌──────────────┐  ┌──────────────────┐  ┌────────────────────┐
+│ TRL resolve  │  │ RiskPolicy fetch │  │ Trading API quote  │
+│ (synthesis)  │  │ (resolver utility)│ │ (Uniswap)          │
+└──────┬───────┘  └────────┬─────────┘  └──────────┬─────────┘
+       │                   │                       │
+       └───────────────────┴───────────────────────┘
+                           │
+                           ▼
+              ┌────────────────────────────┐
+              │  TrustSwap Oracle (HTTP)   │
+              │  • re-resolves both sides  │
+              │  • checks RiskPolicy match │
+              │  • signs attestation       │
+              └─────────────┬──────────────┘
+                            │  attestation + sig
+                            ▼
+              ┌────────────────────────────┐
+              │  Session-key signer        │
+              │  (Namera / ZeroDev kernel) │
+              │  Onchain: toCallPolicy     │
+              │           pinned to Router │
+              └─────────────┬──────────────┘
+                            │  user op
+                            ▼
+        ┌────────────────────────────────────────────┐
+        │   TrustSwapRouter (on Base mainnet)        │
+        │   1. Verify oracle sig + freshness         │
+        │   2. Lookup tier-bucket terms (table):     │
+        │        none      → REVERT (floor)          │
+        │        registered → cap $50,    fee 1.0%   │
+        │        discoverable → cap $500,  fee 0.5%  │
+        │        verified   → cap $5k,    fee 0.25%  │
+        │        full       → unbounded,  fee 0%     │
+        │   3. Apply stricter-wins join (counterparty)│
+        │   4. Forward to Universal Router           │
+        └─────────────────────┬──────────────────────┘
+                              │
+                              ▼
+        ┌────────────────────────────────────────────┐
+        │   Uniswap Universal Router (Base mainnet)  │
+        │   0x6ff5693b9...d299b43                    │
+        └────────────────────────────────────────────┘
 ```
-
-## Reference reading (clone or skim before coding)
-
-| Repo | Purpose | Path on this machine |
-|---|---|---|
-| `Uniswap/uniswap-ai` | Agent-readable skill packages — `swap-integration`, `pay-with-any-token`, `v4-sdk-integration`. The canonical "how to integrate Uniswap as an agent" surface. | `~/synthesis-research/uniswap-ai/` |
-| `Uniswap/sdks` | Source of `@uniswap/{sdk-core,v2-sdk,v3-sdk,v4-sdk,router-sdk,universal-router-sdk}`. Lower-level fallback if the Trading API breaks. | not yet cloned — clone if Phase 1 needs it |
-| `Uniswap/universal-router` | Solidity for the router contract on Base (`0x6ff5693b99212da76ad316178a184ab56d299b43`). Read only if debugging an on-chain revert. | not cloned |
-| `Uniswap/uniswapx-service` | Off-chain UniswapX filler/order service. Read if we add UniswapX routing as a stretch. | not cloned |
-| `thenamespace/namera` | Wallet layer SDK (`@namera-ai/sdk` over `@zerodev/sdk` + `@zerodev/permissions`). | `~/synthesis-research/namera/` |
-
-`developers.uniswap.org` does not expose `SKILL.md`, `llms.txt`, `llms-full.txt`, or an OpenAPI spec at the gateway URL. The official agent-readable surface is `uniswap-ai` itself. Do not look for a docs-site SKILL.md — it does not exist.
-
-`Uniswap/ai-toolkit` is a separate repo that's easy to confuse with `uniswap-ai`. It is *internal* Uniswap dev tooling (Claude Code slash commands like `/review-pr`, MCP integrations to Linear/Notion/Graphite). Not a build dep for us. Useful only as cultural signal that Uniswap engineers are Claude-Code-pilled.
 
 ## Components
 
-### 1. Policy gate (consumed from `@synthesis/resolver`)
+### 1. TRL substrate — `@synthesis/resolver@0.2.0` (consumed)
 
-The `gate()` primitive ships in synthesis — see `Depends on` above. TrustSwap imports it directly:
+Read-only library. Provides `resolve(ensName) → TrustProfile`, the `gate()` policy primitive, the `Signer` interface (`createLocalSigner` + `createNameraSigner`), and the `ensemble gate` CLI for inspection. Already shipped via the synthesis Layer A PRs (#27–30). TrustSwap consumes via `file:../synthesis/packages/resolver` during dev; npm-published version pre-judging.
 
-```typescript
-import { gate, type TrustPolicy, type GateDecision } from "@synthesis/resolver";
-```
+### 2. TrustSwap Oracle service (NEW — `packages/oracle`)
 
-TrustSwap-specific policy *defaults* (e.g. always `minTier: "verified"`, `requireLineage: true`) live in `packages/core/policy.ts` — a thin module that exports a `defaultSwapPolicy: TrustPolicy` constant and a `parsePolicyOverrides(input)` helper for CLI flags. No new `gate()` logic; just opinionated defaults for the swap use case.
-
-### 2. Trading API client (`packages/core/trading.ts`)
-
-New in `trust-swap/packages/core/`. A thin wrapper around `https://trade-api.gateway.uniswap.org/v1`.
-
-The Trading API exposes more than the 3-step flow. Per `developers.uniswap.org/docs/api-reference`, the documented endpoints are:
-
-| Group | Endpoints |
-|---|---|
-| Swapping | `/check_approval`, `/quote`, `/swap`, `/swaps/status`, swap calldata for EIP-5792 and EIP-7702 |
-| Orders (UniswapX) | create/get gasless orders |
-| Liquidity | check LP approvals; create / increase / decrease / claim-fees on V3 and V4 LPs; classic V2 LPs; pool info |
-| Utilities | `/send` calldata, swappable tokens list, bridgable tokens list |
-| Wallet ops | encode 7702 wallet transactions, get wallet delegation info |
-
-For v1 we implement: `checkApproval`, `quote`, `swap`, `swapStatus`, and `swappableTokens`. Everything else (LP, EIP-7702, gasless order creation as a *server* rather than a client) is out of scope for TrustSwap but worth flagging in `FEEDBACK.md` — the API surface is broader than the agent skill currently teaches.
-
-Responsibilities:
-
-- Build typed request bodies from typed inputs.
-- Handle routing-aware `permitData` rules (UniswapX excludes it from `/swap`; CLASSIC requires both `signature` and `permitData` together, or neither).
-- Validate response shape before returning (`swap.data` non-empty hex; `swap.to` is a valid address).
-- Expose typed errors for quote-expired, slippage-exceeded, insufficient-liquidity, 429 (rate-limited).
-- Optional `swapStatus(orderHash | txHash)` for the daemon dashboard's polling loop.
-
-The client does no signing. It returns a `SwapTransaction` ready for `signer.execute(batches)` against either `createLocalSigner` (EOA) or `createNameraSigner` (kernel account) — both come from `@synthesis/resolver`.
-
-**Lower-level fallback path.** If the Trading API breaks during development, we can fall back to building Universal Router calldata locally via `@uniswap/universal-router-sdk` (in the `Uniswap/sdks` monorepo). The SDK's `SwapRouter.swapCallParameters(trade, options)` produces `{ calldata, value }` we feed into the same `Batch`. Keep this as a documented escape hatch, don't implement unless we hit a Trading API outage. Adds about ~200 lines and the dep `@uniswap/universal-router-sdk`, `@uniswap/sdk-core`, `@uniswap/v3-sdk` (or v4-sdk) for pool fetching.
-
-### 3. Signer wiring (consumed from `@synthesis/resolver`)
-
-The `Signer` interface and the `createLocalSigner` / `createNameraSigner` adapters ship in synthesis. TrustSwap is responsible for the *operational* setup that turns those generic adapters into a working signer:
-
-- Provisioning the ZeroDev kernel account (one-time owner-key ceremony, off-droplet)
-- Encrypting the owner key into `~/.synthesis/keystore.json`
-- Issuing the first session key with the four onchain policies attached (`toCallPolicy`, `toGasPolicy`, `toRateLimitPolicy`, `toTimestampPolicy`) and serializing it to disk
-- Funding the kernel account on Base
-- Provisioning a Pimlico/Alchemy bundler URL
-- Pre-installing the session-key validator (don't let lazy install be a stage event)
-
-These ceremonies are TrustSwap-specific operator concerns. They're tracked in Phase 0 below. The synthesis adapter is intentionally policy-agnostic — *which* policies get installed is a choice the consuming app makes.
-
-The four policies TrustSwap installs:
+A small HTTP service that signs attestations. Run by the TrustSwap project (single oracle for the hackathon — the router's constructor stores the oracle's pubkey).
 
 ```typescript
-toCallPolicy({
-  permissions: [{
-    target: UNIVERSAL_ROUTER_BASE,
-    abi: UR_ABI,
-    functionName: "execute",
-    valueLimit: parseEther("0.005"),
-  }],
-  policyVersion: CallPolicyVersion.V0_0_4,
-})
-toGasPolicy({ allowed: parseEther("0.005") })
-toRateLimitPolicy({ count: 1, interval: 3600 })
-toTimestampPolicy({ validUntil: Math.floor(Date.now() / 1000) + 86400 })
+POST /attest
+{ swapper, recipient, tokenIn, tokenOut, amountIn }
+→ { attestation, signature }
+  attestation: { swapper, recipient, swapperTier, recipientTier, expiresAt, nonce }
 ```
 
-**Atomic approve+swap.** Because the `Signer` interface accepts `Batch[]` and the Namera adapter passes them through `executeTransaction`, we collapse the Trading API's two transactions (`/check_approval` result + `/swap` result) into one batch:
+Internals:
+1. Re-resolve `swapper` and `recipient` via `@synthesis/resolver`
+2. If either is tier `none` → refuse (return 403 with onboarding hint)
+3. Fetch each side's RiskPolicy (text record `agent-risk-policy`, or endpoint override)
+4. Verify each side meets the other's RiskPolicy (`minCounterpartyTier`, `maxAcceptedSize`, `acceptedTokens`, `requiredManifestSig`)
+5. Sign the attestation with the oracle's private key (kept in env var; rotation policy in spec)
+6. Return signed attestation
+
+The oracle is honest-but-curious: it signs only after re-validating both sides. The router accepts only attestations signed by the registered oracle pubkey. Future versions can support multiple oracles via threshold signing — out of scope for v1.
+
+Hosted on Vercel/Cloudflare Workers. Source: `packages/oracle/`.
+
+### 3. TrustSwapRouter — Solidity contract (NEW — `packages/contracts`)
+
+The on-chain enforcement layer. ~150 LoC plus tier-bucket tables.
+
+```solidity
+contract TrustSwapRouter {
+  address public constant UNIVERSAL_ROUTER = 0x6ff5693b9...;
+  address public immutable ORACLE_PUBKEY;
+
+  enum TrustTier { None, Registered, Discoverable, Verified, Full }
+
+  struct Attestation {
+    address swapper;
+    address recipient;
+    TrustTier swapperTier;
+    TrustTier recipientTier;
+    uint256 expiresAt;
+    uint256 nonce;
+  }
+
+  function gatedSwap(
+    bytes calldata universalRouterCalldata,
+    Attestation calldata attestation,
+    bytes calldata oracleSig
+  ) external payable {
+    // 1. Verify oracle signature over canonical attestation bytes
+    // 2. Replay protection (nonce table per swapper)
+    // 3. Freshness: block.timestamp <= attestation.expiresAt
+    // 4. Floor: revert if either tier == None
+    // 5. Tier-bucket caps: stricter-wins join across both sides
+    // 6. Compute fee, deduct, route remainder
+    // 7. Forward to Universal Router
+    // 8. Forward output tokens to recipient
+  }
+
+  function maxTradeSize(TrustTier tier) internal pure returns (uint256) {
+    if (tier == TrustTier.Full)         return type(uint256).max;
+    if (tier == TrustTier.Verified)     return 5000e6;     // $5k
+    if (tier == TrustTier.Discoverable) return 500e6;
+    if (tier == TrustTier.Registered)   return 50e6;
+    revert("tier=none not eligible");
+  }
+
+  function feeBps(TrustTier tier) internal pure returns (uint256) {
+    if (tier == TrustTier.Full)         return 0;
+    if (tier == TrustTier.Verified)     return 25;     // 0.25%
+    if (tier == TrustTier.Discoverable) return 50;
+    return 100;                                         // 1.0%
+  }
+}
+```
+
+**Two knobs (locked in for v1):** `maxTradeSize` and `feeBps`, both per-tier.
+
+**Floor:** `tier == None` reverts. The four other tiers are admitted with graded terms.
+
+**Stricter-wins join:** when both swapper and recipient have tiers, the router uses `min(swapperTier, recipientTier)` for both knobs.
+
+**Foundry** for tests + deployment. Single deployment to Base mainnet during Phase 2.
+
+### 4. RiskPolicy (NEW — schema + storage)
+
+Per-identity *opt-in* preference, published on the identity's ENS:
 
 ```typescript
-await signer.execute([{
-  chainId: 8453,
-  atomic: true,
-  calls: [
-    { to: approval.to, data: approval.data, value: BigInt(approval.value) },
-    { to: swap.to,     data: swap.data,     value: BigInt(swap.value)     },
-  ],
-}]);
+interface RiskPolicy {
+  minCounterpartyTier: TrustTier;     // "I won't transact with anyone below this"
+  maxAcceptedSize: bigint;            // "Cap their swap-in to me at $X"
+  acceptedTokens: address[];          // "I'll accept these tokens, not others"
+  requiredManifestSig?: boolean;      // "Counterparty's manifest must verify"
+  validUntil?: number;                // optional expiry
+}
 ```
 
-One bundler round trip, one validator pass, one onchain signature. This is a real DX win the kernel-account signer grants for free — flag it in `FEEDBACK.md` as a Trading API composition pattern that wouldn't be possible with EOA signing.
+**Storage (in priority order):**
+1. **Endpoint override** — if the identity has an `agent-endpoint` ENSIP-26 record, fetch RiskPolicy from `<endpoint>/policy` (live, real-time updatable). Used by active agents.
+2. **ENS text record** — fetch from text record `agent-risk-policy` on the identity's ENS. Either inline JSON or `ipfs://...` reference. Used by passive identities.
+3. **Default (absent)** — if neither, the router's floor is the only constraint. Most identities default here.
 
-### 4. CLI command (`packages/cli/commands/swap.ts` in `trust-swap/`)
+The oracle does the fetch as part of the attestation flow. The router itself has no awareness of RiskPolicy — it only enforces the tier-bucket terms baked into the attestation. RiskPolicy enforcement happens **off-chain at attestation-issuance time**: if either side fails the other's RiskPolicy, the oracle refuses to sign, full stop.
+
+**Key constraint (per spec):** RiskPolicy can only be **stricter** than the router's floor. It cannot loosen — a recipient cannot publish "minCounterpartyTier: none" to attract gas-griefing or spam.
+
+### 5. Trading API client — `packages/core/trading.ts`
+
+Thin wrapper around `https://trade-api.gateway.uniswap.org/v1`. Returns the Universal Router calldata that gets passed *into* `TrustSwapRouter.gatedSwap()`. Same shape as planned in framing 1, just no longer the final on-chain call — it's input to our router.
+
+For v1 we implement: `checkApproval`, `quote`, `swap`, `swapStatus`, `swappableTokens`. Routing-aware `permitData` handling (UniswapX excludes from /swap; CLASSIC requires sig+permitData together or neither). Validates response shape before returning. Typed errors for quote-expired, slippage-exceeded, insufficient-liquidity, 429 rate-limited.
+
+The client does no signing. It returns a `SwapTransaction` that becomes the `universalRouterCalldata` argument to the router's `gatedSwap()` function.
+
+### 6. Orchestration — `packages/core/orchestrate.ts`
+
+The load-bearing composition. Pure async function, reused by CLI / server actions / daemon / MCP.
+
+```typescript
+orchestrate({
+  recipientEns, tokenIn, tokenOut, amount, signer,
+  callerEns,
+}) → {
+  decision,                    // local pre-flight gate (synthesis gate())
+  recipientRiskPolicy,         // fetched
+  attestation?,                // from oracle
+  attestationSignature?,       // from oracle
+  routerCalldata?,             // gatedSwap(...) calldata
+  txHash?,                     // after broadcast
+  clampApplied?,               // if router-imposed cap was hit
+  onboardingHint?,             // if denied for tier reasons
+}
+```
+
+Steps:
+1. Resolve recipient via TRL → `TrustProfile` + tier
+2. Fetch recipient's RiskPolicy (endpoint or text record or default)
+3. Local pre-flight: apply `gate()` for early diagnostic + onboarding hints (but the oracle is the authority)
+4. Request attestation from oracle (`POST /attest`)
+5. Fetch quote + swap calldata from Trading API
+6. Build `gatedSwap()` calldata: `{ universalRouterCalldata, attestation, oracleSig }`
+7. Sign + broadcast via `signer.execute([batch])` (Namera kernel account preferred for atomic batching)
+8. Return full diagnostic record
+
+### 7. CLI — `packages/cli` (the `tru` binary)
 
 ```bash
-tru swap <recipient-ens> \
-  --token-in <symbol|address>     # default USDC \
-  --token-out <symbol|address>    # default WETH \
-  --amount <n>                    # in human units \
-  --chain <name>                  # default base \
-  --min-tier <tier>               # default verified \
+tru swap <recipient.eth> \
+  --token-in <symbol|address>     # default USDC
+  --token-out <symbol|address>    # default WETH
+  --amount <n>                    # human units
+  --chain <name>                  # default base
   --signer namera|local           # default namera if NAMERA_KEYSTORE_PATH set
   --dry-run                       # do everything except broadcast
-```
 
-Output: a transcript of the resolution, the gate decision (with reason), the quote (with route summary), and either the broadcast hash or the deny diagnostic. The `tru` binary is registered in `trust-swap/packages/cli/package.json` under `bin`.
+tru policy publish \
+  --min-tier <tier>               # required; default verified
+  --max-size <usd>                # required
+  --tokens <comma-list>           # required
+  --require-manifest-sig          # optional
+  --valid-until <iso8601>         # optional
+  # Updates the agent-risk-policy ENS text record on YOUR ENS
 
-### 5. Agent daemon mode (`packages/cli/commands/agent.ts` in `trust-swap/`)
+tru policy show <ens>             # prints another agent's published RiskPolicy
 
-```bash
 tru agent run \
-  --policy <policy.json>          # TrustPolicy + signal source
-  --wallet <namera-account-id>    # Namera Smart Account
+  --policy <policy.json>          # operator-side policy + signal source
   --interval <seconds>            # default 60
   --max-iterations <n>            # default unbounded
 ```
 
-Loop:
+`tru` is a separate binary from `ensemble` — they share `@synthesis/resolver` as a library but ship as independent CLIs (Ensemble is the substrate, Tru is one application of it).
 
-```
-1. Pull signal: read SIGNAL_URL or pop from a small Redis queue
-2. Resolve recipient ENS via @synthesis/resolver
-3. Apply gate(profile, policy) — short-circuit on deny
-4. Fetch /quote from Trading API
-5. Sign with Namera session key
-6. Broadcast
-7. Append result to a JSONL log served at /agent/log on the site
-```
+### 8. Site — `packages/site`
 
-Crash-only design — no resume state, no recovery logic. If a swap is in flight when the process dies, Namera's onchain rate-limit policy prevents duplication on restart.
+Next.js. Three pages:
 
-### 6. Site `/swap` page (`trust-swap/packages/site/src/app/swap`)
+- **`/swap`** — recipient input, amount input, live trust card (5 layer badges + tier ribbon), recipient's RiskPolicy displayed inline ("This agent accepts: USDC, USDT; min tier: verified; max size: $2k"), router-derived clamps shown as preview ("Your tier `verified` caps this swap at $5k; Bob's RiskPolicy further caps at $2k → effective max: $2k"), gate-bound action button.
+- **`/policy`** — your own RiskPolicy editor; signs + publishes to your ENS text record.
+- **`/agent`** — daemon dashboard (Phase 5). Live SSE log tail, kernel account state, last 10 attempts.
 
-Two inputs (recipient ENS + amount). Below them, a live trust card that resolves as the user types — five layer badges, a tier ribbon, the AIP lineage chain visualized as a horizontal trail of version stamps. The swap button is bound to the gate decision; below `verified`, the button is disabled with the deny reason inline; at `verified+`, the button enables and shows the live Trading API quote.
+### 9. MCP server — `packages/mcp`
 
-Reuses styling and components from the synthesis `/resolve` and `/trust` pages — copy the visual language at scaffold time, no new design system work. The component primitives can be lifted directly from `synthesis/packages/site/src/app/trust/` since this is a hackathon submission, not a productized fork; revisit if it needs to live on long-term.
+Exposes `trust_gated_swap` as an MCP tool. Same parameters as `tru swap`. Distribution surface so any MCP-aware host (Claude, GPT, Bankr) can call TrustSwap. Public-good claim: every MCP host gets reputation-graded settlement for free.
 
-### 7. Site `/agent` page (`trust-swap/packages/site/src/app/agent`)
+### 10. spec/trust-graded-swap.md
 
-The droplet's window into itself. Server-side reads of:
+Formal convention spec for the graded-router pattern + RiskPolicy schema. See companion document at `spec/trust-graded-swap.md` (created in Phase 1). Pitched as a future ENSIP if adoption extends beyond TrustSwap.
 
-- Current kernel account address (with link to BaseScan)
-- Current onchain policy state (rate-limit window, gas remaining, expiry from `toTimestampPolicy.validUntil`)
-- Last 10 swap attempts: timestamp, recipient ENS, gate decision, user-op hash, terminal status from `/swaps/status`
-- Live tail of `/agent/log` via Server-Sent Events
-
-The status column polls the Trading API's `/swaps/status` endpoint until each swap reaches a terminal state (`SUCCESS`, `FAILED`, `EXPIRED`). This is what makes the dashboard *live* rather than a static log.
-
-This is the demo's screen-share artifact: open `/agent` in a browser and watch the daemon work in real time.
-
-### 8. MCP server (`trust-swap/packages/mcp`)
-
-A Model Context Protocol server exposing one tool, `trust_gated_swap`, with the same parameters as the CLI. Run standalone via `npx trust-swap-mcp`. Lets any MCP-aware host (Claude, GPT, Bankr) call TrustSwap as a tool with policy enforcement built in. This is the public-good distribution surface — every MCP host gets trust-gated settlement for free.
-
-## File layout (new repo)
-
-The TrustSwap repo is a fresh pnpm workspace at `~/trust-swap/` with `estmcmxci/trust-swap` as origin. It depends on `@synthesis/resolver` (and `@synthesis/cli` for the `ensemble gate` inspector) via `file:../synthesis/packages/{resolver,cli}` during local development; published npm versions before judging.
+## File layout
 
 ```
 trust-swap/
-  package.json                          pnpm workspace root
-  pnpm-workspace.yaml
-  tsconfig.base.json
-  biome.json
-  .gitignore
-  PLAN.md                               this file (moved from synthesis/plans/trust-gated-swap.md)
-  README.md                             one-paragraph pitch + link to synthesis
-  FEEDBACK.md                           required by Uniswap track
-  spec/
-    trust-gated-swap.md                 short pattern spec for forkers
-  packages/
-    core/
-      package.json                      depends on @synthesis/resolver
-      src/
-        policy.ts                       defaultSwapPolicy + parsePolicyOverrides
-        trading.ts                      Uniswap Trading API client
-        orchestrate.ts                  resolve + gate + quote + sign composition
-        index.ts                        barrel exports
-    cli/
-      package.json                      bin: { tru: ./dist/index.js }
-      src/
-        index.ts                        incur entry, registers commands
-        commands/
-          swap.ts                       tru swap
-          agent.ts                      tru agent run
-    site/
-      package.json                      Next.js app
-      src/app/
-        swap/
-          page.tsx                      swap UI
-          actions.ts                    server actions
-        agent/
-          page.tsx                      daemon dashboard
-          log/route.ts                  SSE log tail
-        api/
-          gate/route.ts                 POST { ens, policy } → decision
-    mcp/
-      package.json                      bin: { trust-swap-mcp: ./dist/index.js }
-      src/index.ts                      MCP server entry
-  infra/
-    droplet/
-      systemd/trust-swap-agent.service  daemon unit file
-      cloud-init.yaml                   provision script
-
-synthesis/                              (existing repo, unchanged by this plan)
-  plans/
-    trust-gated-swap.md                 this file lives here pre-scaffold; moves to trust-swap/PLAN.md once the repo is created
-    trl-policy-and-signers.md           the Layer A plan this depends on
+├── PLAN.md                                this file
+├── README.md                              one-paragraph pitch
+├── FEEDBACK.md                            Uniswap prize requirement
+├── spec/
+│   └── trust-graded-swap.md               graded mode + RiskPolicy convention
+├── packages/
+│   ├── core/                              Trading API client + orchestrate + policy table + RiskPolicy fetcher
+│   ├── cli/                               tru binary (swap, policy, agent run)
+│   ├── site/                              Next.js (/swap, /policy, /agent)
+│   ├── mcp/                               MCP server
+│   ├── contracts/                         Solidity (TrustSwapRouter + Foundry tests + deploy script)
+│   └── oracle/                            HTTP signing service (Vercel/CF Workers)
+└── infra/
+    └── droplet/                           systemd unit + cloud-init for Phase 5
 ```
-
-**Pre-scaffold note.** This plan currently lives at `synthesis/plans/trust-gated-swap.md`. Once `trust-swap/` is scaffolded (Phase −1.B), it moves to `trust-swap/PLAN.md` and the synthesis copy becomes a one-line stub: *"TrustSwap is built in `estmcmxci/trust-swap`. See trl-policy-and-signers.md for the synthesis-side prerequisites."*
 
 ## Build sequence
 
-Critical path is everything through Phase 3. Phases 4–5 are stretch and can be cut.
+Critical path is everything through Phase 4. Phases 5 + 6 are stretch but Phase 6 (A2A) is the demo headline — fold it in only after the underlying tier-graded router is live + bidirectional RiskPolicy works.
 
-### Phase −1.A — Synthesis PR landed (blocking, owned by `plans/trl-policy-and-signers.md`)
+### Phase −1.A — Synthesis primitives shipped (DONE)
 
-- [ ] `gate()`, `TrustPolicy`, `GateDecision` exported from `@synthesis/resolver`
-- [ ] `Signer`, `Batch`, `createLocalSigner`, `createNameraSigner` exported from `@synthesis/resolver`
-- [ ] `ensemble gate <ens>` registered in `@synthesis/cli`
-- [ ] `@synthesis/resolver@0.2.0` and `@synthesis/cli@<bumped>` either published to npm OR available via `file:` dep from `~/synthesis/packages/{resolver,cli}`
+`@synthesis/resolver@0.2.0` and `@synthesis/cli@0.2.0` ship `gate()`, `Signer`, `createLocalSigner`, `createNameraSigner`, `Batch`, `TrustPolicy`, `GateDecision`, and the `ensemble gate` CLI. Reference: synthesis-md/Trust Resolution Layer project, PRs #27–30.
 
-If any of these are missing when Phase −1.B starts, stop and finish the synthesis PR first.
+### Phase −1.B — Repo scaffold (DONE)
 
-### Phase −1.B — Repo scaffold (Day 0, ~2 hours)
-
-Bring the new repo and its toolchain online so Phase 0 has somewhere to land code.
-
-- [ ] `mkdir ~/trust-swap && cd ~/trust-swap && git init`
-- [ ] `gh repo create estmcmxci/trust-swap --private --source=. --remote=origin`
-- [ ] Move `synthesis/plans/trust-gated-swap.md` → `trust-swap/PLAN.md`. Replace the synthesis copy with a one-line stub pointing at the new repo.
-- [ ] Scaffold pnpm workspace: root `package.json`, `pnpm-workspace.yaml`, `tsconfig.base.json`, `biome.json`, `.gitignore`. Match synthesis's tooling choices for consistency.
-- [ ] Create empty package skeletons: `packages/{core,cli,site,mcp}` each with `package.json`, `tsconfig.json`, `src/index.ts`. Compile-only, no logic.
-- [ ] Wire `@synthesis/resolver` and `@synthesis/cli` as `file:` deps in the packages that consume them (`core`, `cli`, `site`, `mcp`).
-- [ ] Smoke-import test in `packages/core/src/index.ts`: `import { gate, type Signer } from "@synthesis/resolver";` — confirms the dep wiring works before any TrustSwap code is written.
-- [ ] `README.md` (one-paragraph pitch + link to synthesis), placeholder `FEEDBACK.md` and `spec/trust-gated-swap.md` (headers only, filled in during build).
-- [ ] Initial commit + push to `origin/main`.
+pnpm workspace, four package skeletons (`core`, `cli`, `site`, `mcp`), `@synthesis/resolver` wired as `file:` dep, `tru` binary smoke-tested. At commit `e778bc8`.
 
 ### Phase 0 — Operational readiness (Day 1, half day)
 
-Run the one-time ceremonies and credential setup that turn the generic synthesis primitives into a working signer for TrustSwap. These produce on-disk artifacts that the daemon and CLI consume.
+- [ ] Audit live ENS reads on Base via `ensemble trust emilemarcelagustin.eth`
+- [ ] Register `UNISWAP_API_KEY` at developers.uniswap.org
+- [ ] Provision Base ERC-4337 bundler (`BUNDLER_URL_BASE`)
+- [ ] Smoke-test Uniswap API key with `/quote`
+- [ ] Smoke-test bundler with `eth_supportedEntryPoints`
+- [ ] Add `NAMERA_*` env placeholders to `.env.example`
+- [ ] Provision + fund kernel account (createAccountClient ECDSA)
+- [ ] Encrypt owner key into `~/.synthesis/keystore.json`
+- [ ] **NEW:** Generate TrustSwap oracle keypair, save private key encrypted, record pubkey for the router constructor
+- [ ] **NEW:** Provision Vercel/Cloudflare Workers project for the oracle service deployment
 
-- [ ] Confirm `getEnsAddress` works for our test recipients (`emilemarcelagustin.eth` and one externally-controlled name) — sanity check synthesis is healthy on the network we're targeting.
-- [ ] Register at developers.uniswap.org → obtain `UNISWAP_API_KEY`. Store in `trust-swap/.env.local` and add to `.env.example` (placeholder).
-- [ ] Sign up for a Base ERC-4337 bundler (Pimlico free tier preferred; Alchemy as alt). Store `BUNDLER_URL_BASE` in `.env.local`. Note free-tier quota in repo README.
-- [ ] Smoke-test the Uniswap API key with a single `/quote` for a known pair (USDC→WETH on Base). 200 OK = key is live.
-- [ ] Smoke-test the bundler URL with `eth_supportedEntryPoints`. Non-empty response = bundler is live on Base.
-- [ ] Add `NAMERA_KEYSTORE_PATH=/home/<user>/.synthesis/keystore.json` and `NAMERA_SESSION_KEY_PATH=/home/<user>/.synthesis/session-key.json` placeholders to `.env.example`.
-- [ ] Run `createAccountClient({ type: "ecdsa", ... })` once with a fresh ECDSA owner key → record the deterministic kernel account address. Fund it on Base with ~$20 USDC + $5 ETH for the early swaps and the lazy validator-install gas.
-- [ ] Encrypt the owner key into a keystore JSON at `~/.synthesis/keystore.json`. The droplet will get the *session key serialization* only, never this file.
+### Phase 1 — TypeScript foundation (Day 2, full day)
 
-### Phase 1 — Trading API + session key + CLI dry run (Day 1.5, full day)
+The off-chain code that everything else builds on. No Solidity yet, no router yet. The CLI runs against a *mocked* oracle + *mocked* router for early validation.
 
-- [ ] Implement `packages/core/trading.ts` with `checkApproval`, `quote`, `swap` functions and routing-aware `permitData` handling. Tests use recorded responses for both CLASSIC and DUTCH_V2 routes.
-- [ ] Implement `packages/core/policy.ts` exporting `defaultSwapPolicy` (a `TrustPolicy` with `minTier: "verified"`, `requireLineage: true`, `requireSig: true`, `allowSelf: true`) and `parsePolicyOverrides(input)` for CLI flags. Five-line module — no `gate()` logic, just defaults.
-- [ ] Implement `packages/core/orchestrate.ts` — the `resolve → gate → quote → sign` composition. Pure async function, no I/O dependencies beyond what's passed in. Reused by CLI, server actions, daemon, and MCP.
-- [ ] Issue first session key locally (one-time, owner-key-required ceremony) with the four onchain policies attached (`toCallPolicy` for Universal Router, `toGasPolicy`, `toRateLimitPolicy`, `toTimestampPolicy`). Serialize via `@namera-ai/sdk/session-key`. Save to `~/.synthesis/session-key.json`. The synthesis-side `createNameraSigner` consumes this file; the policies themselves are TrustSwap's choice.
-- [ ] Implement `packages/cli/src/commands/swap.ts` — wires `orchestrate()` to the CLI surface.
-- [ ] End-to-end CLI test: `tru swap testname.eth --amount 0.5 --signer local --dry-run` — completes the resolve + gate + quote flow without broadcasting.
+- [ ] Add `packages/contracts` package skeleton (Foundry config, will be filled in Phase 2)
+- [ ] Add `packages/oracle` package skeleton (HTTP service shell)
+- [ ] Implement `packages/core/trading.ts` — Trading API client
+- [ ] Implement `packages/core/policy.ts` — `defaultSwapPolicy` + tier-bucket TABLE (mirrors the Solidity contract's table; both ship from this single source of truth)
+- [ ] Implement `packages/core/risk-policy.ts` — `RiskPolicy` Zod schema + `resolveRiskPolicy(ensName)` utility (endpoint override → text record → default)
+- [ ] Implement `packages/core/orchestrate.ts` — full composition with mocked oracle/router
+- [ ] Issue first Namera session key with `toCallPolicy` pinned to the *future* TrustSwapRouter address (compute deterministically via CREATE2 salt; reissue if the deploy address changes)
+- [ ] Implement `packages/cli/src/commands/swap.ts` — wires orchestrate to CLI
+- [ ] E2E CLI dry-run: `tru swap testname.eth --amount 0.5 --signer local --dry-run` runs end-to-end (against mocked oracle+router)
 
-### Phase 2 — Live broadcast (Day 2.5, half day)
+### Phase 2 — Solidity router + Oracle service + first live broadcast (Day 3–4, two days)
 
-- [ ] First real swap: small USDC→WETH on Base with `--signer local`. Verify on BaseScan.
-- [ ] Pre-install the session key validator on the kernel account: call `isSessionKeyInstalled` first; if false, trigger an installation via the owner client. (This is the lazy install — eat the gas now, not on stage.)
-- [ ] Same swap with `--signer namera` using the atomic approve+swap batch. Verify session key signature path works end-to-end and the user op shows on BaseScan with the kernel account address as `from`.
-- [ ] Negative path: target an ENS name with tier `none`. Confirm the gate denies and no quote is fetched.
-- [ ] Negative path 2: try a swap with the session key against a non-Universal-Router target. Confirm the ZeroDev validator rejects on-chain (this is the imperative-policy demo screenshot).
+The Solidity engagement. Where the real on-chain footprint lands.
 
-### Phase 3 — Site UI (Day 3, full day)
+- [ ] Foundry setup: `forge init` inside `packages/contracts`, `foundry.toml`, dependencies (forge-std, openzeppelin)
+- [ ] Implement `packages/contracts/src/TrustSwapRouter.sol` — full contract per Component 3 above
+- [ ] Foundry tests:
+  - Tier-floor revert (tier=none)
+  - Tier-bucket cap enforcement (each of registered/discoverable/verified/full)
+  - Stricter-wins join (asymmetric tiers between swapper + recipient)
+  - Oracle signature verification (good sig accepts; bad sig reverts)
+  - Replay protection (nonce reuse reverts)
+  - Freshness (expired attestation reverts)
+  - Fee deduction math (each tier)
+  - Universal Router forward (mocked target — ensure data is forwarded byte-perfect)
+- [ ] Implement `packages/oracle/` — HTTP signing service
+  - `POST /attest` route
+  - Re-resolves via `@synthesis/resolver`
+  - Fetches both RiskPolicies via `core/risk-policy.ts`
+  - Returns 403 + onboarding hint for tier=none or RiskPolicy mismatches
+  - Signs with oracle key from env
+- [ ] Deploy oracle to Vercel/CF Workers (env vars set, key never logged)
+- [ ] Deploy `TrustSwapRouter` to Base mainnet via Foundry script (`forge script ... --broadcast`)
+- [ ] Replace mocks in `orchestrate.ts` with real oracle URL + real router address
+- [ ] First real swap: `tru swap testname.eth --amount 0.5 --signer local` end-to-end through the deployed router. Verify on BaseScan.
+- [ ] Repeat with `--signer namera` (atomic approve+swap+gatedSwap as a single user op)
+- [ ] Update `FEEDBACK.md` — Trading-API-into-custom-router composition observations
 
-- [ ] `/swap` page with the live trust card and gate-bound button. Mobile-decent, not pixel-perfect.
-- [ ] Token picker on `/swap` populated from Trading API's swappable-tokens endpoint (cache the response — it's stable enough).
-- [ ] `/api/gate` server action — used by the page and exposed as a public endpoint.
-- [ ] `/agent/status/[hash]` — proxies `/swaps/status` polls to the dashboard.
-- [ ] One screenshot test capturing the deny state for the demo backup.
+### Phase 3 — RiskPolicy + bidirectional + tru policy publish (Day 5, full day)
 
-### Phase 4 — Droplet daemon (Day 4, full day) — STRETCH but high-leverage
+Complete the bidirectional story. Both sides have published preferences; both sides' preferences enforce.
 
-- [ ] DigitalOcean droplet (or Fly.io machine — whichever is faster). Smallest tier; this is a demo box.
-- [ ] systemd unit running `tru agent run` against a tiny mock signal source (HTTP endpoint we control).
-- [ ] `/agent` page on the site with SSE log tail.
-- [ ] Test: trigger a signal, watch the daemon resolve → gate → quote → sign → broadcast on screen.
+- [ ] Implement `packages/cli/src/commands/policy.ts` — `tru policy publish` + `tru policy show`
+- [ ] `tru policy publish` writes to the user's `agent-risk-policy` ENS text record (using a write-side flow — needs the user's ENS controller key, but only for the publish step)
+- [ ] Smoke-test: publish a RiskPolicy on a test ENS, fetch it back via `resolveRiskPolicy()`, assert round-trip integrity
+- [ ] Update `orchestrate.ts` to fetch the recipient's RiskPolicy unconditionally (not just defaulted) and surface the "you don't meet their bar" diagnostic with onboarding hints
+- [ ] Update oracle to enforce *both* sides' RiskPolicies (was already in Phase 2; verify here with end-to-end test)
+- [ ] Negative path tests:
+  - Recipient publishes `minCounterpartyTier: full`; tier=verified swapper rejected at oracle with clear diagnostic
+  - Recipient publishes `maxAcceptedSize: $100`; swapper requesting $500 sees clamp diagnostic, can resubmit at $100 or abort
+  - Recipient with no RiskPolicy → falls through to router floor only
+- [ ] FEEDBACK.md updated with bidirectional-attestation observations
 
-### Phase 5 — A2A coordination (Day 5, full day) — STRETCH
+### Phase 4 — Site UI (Day 6, full day)
 
-- [ ] Second droplet running the same daemon under a second ENS name.
-- [ ] Each daemon exposes a `POST /intents` endpoint (TLS, signed). Endpoint URL stored in `agent-endpoint` text record on each ENS name (discovered via ENSIP-26).
-- [ ] Demo flow: `alice-agent.eth` posts intent → `bob-agent.eth` reads it, resolves Alice via TRL, accepts → both daemons run their swaps. Two-sided gate.
+The screen-share artifact. No new on-chain work — surfaces what Phases 1–3 already built.
+
+- [ ] `/swap` page: recipient ENS input, amount input, live trust card (lifted from synthesis `/trust`), recipient's RiskPolicy displayed inline, router-derived clamps shown as preview, gate-bound action
+- [ ] `/policy` page: editor for your own RiskPolicy, signs + publishes
+- [ ] `/api/gate` server action — public endpoint
+- [ ] Token picker from Trading API swappable-tokens
+- [ ] Screenshot tests for: tier-none deny, RiskPolicy mismatch deny, clamp-applied success, A2A pre-flight pass
+
+### Phase 5 — Droplet daemon (Day 7, full day) — STRETCH
+
+- [ ] DigitalOcean (or Fly.io) droplet provisioned, cloud-init.yaml in `infra/droplet/`
+- [ ] systemd unit running `tru agent run`
+- [ ] `/agent` page on the site shows live SSE log tail
+- [ ] Trigger a signal, watch the daemon resolve → fetch RiskPolicy → request attestation → broadcast through router on screen
+
+### Phase 6 — A2A coordination (Day 8, full day) — STRETCH (demo-central)
+
+The headline demo flow. Two daemons under separate ENS names negotiating via the same router.
+
+- [ ] Second droplet under `bob-data.eth` (first under `alice-research.eth`)
+- [ ] Each daemon publishes its RiskPolicy via `tru policy publish`
+- [ ] Each daemon exposes `POST /intents` (TLS); endpoint URL stored in `agent-endpoint` ENS text record
+- [ ] **Demo flow:** `bob-data.eth` posts intent → `alice-research.eth`'s daemon polls intents → resolves Bob via TRL → fetches Bob's RiskPolicy → checks Alice meets it → requests attestation from oracle → oracle re-validates both sides → signs → Alice signs+broadcasts through router → Bob's daemon sees incoming USDC → triggers downstream action
+- [ ] All happens autonomously while we watch on `/agent`
 
 ### Cut lines (in order)
 
-If we run short on time, cut in this order:
-
-1. Cut Phase 5 (A2A). The story still hits two prize tracks without it.
-2. Cut Phase 4 droplet — run the daemon from a laptop during demo. Lose the "live on a server" magic; keep autonomy.
-3. Cut the MCP server — the CLI alone is enough for the public-good claim.
-4. Cut the atomic approve+swap batch — submit two separate user ops. Lose one DX talking point; keep correctness.
-5. Cut Namera entirely, fall back to `createLocalSigner` with an EOA. Lose the wallet-policy story; keep TRL-policy story. Be ready to explain why two policy layers were the original design.
-6. Cut UniswapX-specific routing — stay on CLASSIC. Lose minor depth in the Uniswap pitch; keep the headline.
+1. Cut Phase 6 (A2A) — single-daemon Phase 5 still demos autonomy + graded terms
+2. Cut Phase 5 (droplet daemon) — run from a laptop during demo
+3. Cut MCP server — CLI alone is enough for the public-good claim
+4. Cut Namera-only session-key flow, fall back to `--signer local`
+5. Cut second knob (fee tier) — keep just maxTradeSize for v1
+6. Cut RiskPolicy entirely — fall back to router-floor-only mode (loses the bidirectional story; do not cut unless absolutely required)
 
 ## Demo script (90 seconds)
 
+The Alice / Bob anecdote in compressed form.
+
 ```
-[0:00–0:15]  Open /swap on the site. Type "emilemarcelagustin.eth"
-             into the recipient field. The trust card resolves live —
-             five badges light up green, tier ribbon flips to "full",
-             lineage chain shows v1 → v2 with intact signatures.
-             Quote renders. Sign and broadcast a small USDC→WETH swap.
-             Tx hash links to BaseScan.
+[0:00–0:20]  Open /swap. Type "bob-data.eth" into recipient.
+             Trust card resolves: tier verified, 4/5 layers green.
+             Below it, Bob's RiskPolicy renders: "accepts USDC up to $500
+             from agents at tier verified+". Default amount $200 USDC →
+             swap button enabled with green ALLOW banner. Sign and
+             broadcast. BaseScan link.
 
-[0:15–0:30]  Replace recipient with "random-eoa.eth" — an EOA we
-             control with no TRL setup. Trust card resolves to tier
-             "none". Swap button is disabled. Deny reason: "tier none
-             below required verified; no manifest found." No quote
-             fetched.
+[0:20–0:35]  Replace recipient with "m-bot.eth" — fresh ENS, tier none.
+             Trust card lights up red. Swap button shows the deny diagnostic
+             with onboarding hint: "register on AgentBook for personhood
+             (tier none → registered) to participate."
 
-[0:30–0:45]  Replace with "tampered.eth" — same address as a known
-             good name, but with a manifest signature mismatch.
-             Trust card shows green for personhood + identity but
-             RED for manifest with the lineage chain broken at v2.
-             Tier drops to "discoverable". Swap denied. Diagnostic:
-             "manifest signature does not match current ENS owner."
+[0:35–0:55]  Replace with "tampered.eth" — same address as a known good
+             name, but with a manifest signature mismatch. Tier drops
+             from full to discoverable. Their RiskPolicy field "requires
+             verified counterparty" now blocks our swap (we're full, but
+             they require verified manifest sig and ours has been tampered).
+             Diagnostic: "manifest signature does not match current ENS owner."
 
-[0:45–1:15]  Switch to /agent. The daemon dashboard. Live log tail
-             shows three swap attempts in the last hour, each with
-             gate decision and tx hash. Open BaseScan, click through
-             to one of the broadcast txs — Namera Smart Account →
-             Universal Router on Base, real swap, real value moved.
+[0:55–1:25]  Switch to /agent. The daemon dashboard. Live log tail shows
+             alice-research.eth and bob-data.eth negotiating overnight:
+             three settlements at $200, $500, $200 — each with the
+             attestation, the oracle's RiskPolicy check, the router's
+             tier-bucket lookup. Click through to BaseScan: real swaps,
+             real value, all routed via TrustSwapRouter → Universal Router
+             → Base pools. The daemons did this without us awake.
 
-[1:15–1:30]  Close: "Three primitives composing — TRL for who,
-             Namera for what, Uniswap for the move. Each can be
-             swapped out; together they're trust-gated agentic
-             settlement."
+[1:25–1:30]  Close: "Five primitives — TRL for who, RiskPolicy for what
+             you'll accept, Oracle for the proof, Router for enforcement,
+             Uniswap for the move. Reputation-graded settlement."
 ```
-
-## FEEDBACK.md outline (Uniswap prize requirement)
-
-Required at repo root. Draft headers — to be filled in during the build with concrete observations:
-
-```markdown
-# FEEDBACK.md — TrustSwap experience report on the Uniswap Trading API
-
-## What worked
-- 3-step flow is genuinely well-shaped — easy to compose with a pre-flight policy layer
-- Routing-type discriminated union (CLASSIC | DUTCH_V2 | DUTCH_V3 | PRIORITY) made it
-  natural to write routing-aware code paths
-- Excellent edge-case docs in @uniswap/uniswap-ai (UniswapX permitData rules, L2 WETH,
-  CORS, wagmi v2 useWalletClient pitfalls). This is rare and valuable.
-
-## What didn't / friction we hit
-- No native ENS in API inputs — every agent framework has to bolt on resolution
-  client-side. Proposal: accept `swapper` and `recipient` as ENS names, server-side
-  resolve, return both the resolved address and the canonical name in the response.
-- No policy hook surface — there's no way to say "only quote routes that pass an
-  external check" mid-flow. We had to invert: gate before quote, not during.
-- Quote freshness (~30s) interacts poorly with multi-step pre-flight checks. By the
-  time we resolve TRL + walk lineage + verify signatures, a quote can stale.
-  Proposal: a `recipient-attestation` opaque field that quote/swap carry forward
-  immutably, so the pre-flight result binds to the quote.
-- The /swap body shape (spread the quote response, strip null permitData) is a
-  footgun. Three of our integration bugs traced to this. Proposal: `quote_id` field
-  in /quote response, used as the only required input to /swap.
-
-## Bugs / docs gaps
-- developers.uniswap.org has no llms.txt, no SKILL.md, no OpenAPI/Swagger spec exposed.
-  The agent-readable surface is uniswap-ai (a separate repo), and the docs site only
-  hints at it via `npx skills add uniswap/uniswap-ai`. Proposal: publish llms.txt or
-  llms-full.txt at the docs root and link it from /docs, so AI integration tooling
-  can discover the canonical agent surface without scraping.
-- /openapi.json is not exposed at the trade-api gateway (returns 403). Without it,
-  every consumer reverse-engineers the schema from prose. Publishing the spec
-  privately to API key holders would unlock typed clients for free.
-- The api-reference page documents many endpoints (LP lifecycle, /swaps/status,
-  EIP-7702 calldata, /send, swappable/bridgable tokens) that the swap-integration
-  SKILL.md does not cover. Skill coverage trails API surface — agents using the
-  skill don't know about these endpoints.
-
-## Missing endpoints / what we wished existed
-- ENS-typed inputs everywhere (swapper, recipient)
-- A `/policy` endpoint accepting JSON-Schema describing a pre-flight check, returned
-  in the quote so verifiers can confirm the policy was enforced
-- Webhook for swap completion (we currently poll /swaps/status)
-- Native ERC-4337 user-op calldata endpoint that returns a Batch ready for
-  account-abstraction wallets like Namera/ZeroDev (we currently rebuild it ourselves)
-
-## DX friction
-- No batched check_approval + quote in one call (we always need both)
-- Rate limits not surfaced in headers — we hit 429s without warning
-- The /swap body shape (spread the quote response, strip null permitData, route-
-  aware permitData handling) is the single biggest footgun. We hit three bugs here.
-  Proposal: opaque `quote_id` in /quote response, used as the only required input
-  to /swap. The full route info stays server-side; clients pass an ID.
-- ai-toolkit and uniswap-ai are easy to confuse. uniswap-ai = external agent
-  integration skills; ai-toolkit = internal Uniswap dev workflow. Worth a one-line
-  disambiguation in either README.
-```
-
-This is substantive feedback because we *attempted to compose* with the API rather than just call it. Judges read these.
 
 ## Risks and mitigations
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Namera SDK hits an unforeseen integration bug | Medium | `createLocalSigner` from `@synthesis/resolver` is the fallback. Demo can switch with one env var change (`--signer local`). SDK is at v0.1.0 and unaudited per `TODOS.md`. |
-| Pimlico/Alchemy bundler downtime or rate-limiting | Medium | Configure two bundler URLs in env; signer auto-fails over. Sponsorship credits are free-tier — verify quota before judging week. |
-| ZeroDev validator install fails on first session-key use | Medium | Pre-install in Phase 2. Don't let "lazy install" be a stage event. |
-| Trading API rate-limits during demo | Low | Pre-cache one successful quote + swap for backup; record video as final fallback |
-| Droplet networking flakiness on stage | Medium | Mirror the daemon log to the site via SSE. The site (Vercel) is the screen-share target, not the droplet directly. |
-| TRL resolver returns stale data for a freshly set ENS record | Medium | Set all demo records ≥24h before the hackathon judging window. Pre-warm a Pinata IPFS pin. |
-| AIP manifest layer not yet fully wired in synthesis | High | Owned by `plans/trl-policy-and-signers.md` Phase A.0 — must be audited as part of the synthesis PR, not here. If TrustSwap Phase −1.A starts and the manifest layer is broken, push back to synthesis. |
-| Judges interpret "agent" narrowly as "LLM-driven" and we don't have an LLM in the swap path | Low | The MCP server makes any LLM a TrustSwap host. Demo a Claude session calling the MCP tool if needed. |
-| Signet collision (judges saw a similar shape at Cannes 2026) | Low | Lead the demo with the *tampering* scenario at 0:30 — Signet cannot do lineage verification. |
-| Session key leaks from droplet | Low impact | Onchain policy bounds blast radius: at most 1 swap/hour, ≤$5 gas, only Universal Router with our recipient address, expires in 24h. We *cannot* yet revoke from the daemon — `revokeSessionKey` requires the owner key, which lives in the encrypted keystore off-VM. Time-bound expiry is the primary safeguard. |
+| Foundry / Solidity learning curve eats more time than budgeted | High | Bound Phase 2 to 2 days. If overrun, cut to Phase 1's mocked-router path and demo with that (no on-chain footprint, same UX). |
+| Oracle key leak | Medium impact | Encrypt at rest in env vars. Rotate post-hackathon if exposed. Single-oracle design accepts this risk for v1. |
+| Pimlico/Alchemy bundler downtime | Medium | Two bundler URLs in env; auto-failover. |
+| ZeroDev validator install fails | Medium | Pre-install during Phase 2. Compute router address via CREATE2 deterministically so session key's toCallPolicy pin matches the actual deploy. |
+| Trading API rate-limits during demo | Low | Cache one successful quote+swap pair as backup; record video as final fallback. |
+| Droplet networking flakiness on stage | Medium | Mirror daemon log to site via SSE. Site (Vercel) is the screen-share target. |
+| TRL resolver returns stale data for freshly-set ENS | Medium | Set all demo records ≥24h before judging. Pre-warm IPFS pin. |
+| AIP manifest layer broken in synthesis | Low (already shipped) | Fixed via PRs #27–30. Re-verify at Phase 0 sanity check. |
+| Judges interpret "agent" narrowly as "LLM-driven" and we don't have an LLM in the swap path | Low | MCP server makes any LLM a TrustSwap host. Demo a Claude session calling the MCP tool if needed. |
+| Reputation-graded routing seen as "just a Permit2 variant" | Low | Lead with the bidirectional RiskPolicy story — no Permit2 variant has counterparty preferences as a first-class signal. |
+| Session key leaks from droplet | Low impact | Onchain `toCallPolicy` pinned to TrustSwapRouter only — at most 1 swap/hour, ≤$5 gas, expires in 24h. Time-bound expiry is the primary safeguard. |
+| RiskPolicy adversarial publishing (e.g. `minCounterpartyTier: none, maxSize: ∞`) attracts spam | Low | Router enforces its own floor regardless of RiskPolicy. RiskPolicy can only further restrict, never loosen. Documented in spec. |
 
 ## Public-good × reference-spec deliverables
 
-Three artifacts other projects can fork:
+Five artifacts other projects can fork:
 
-1. **`@synthesis/resolver@0.2.0` with `gate()` and `Signer`** — shipped via the synthesis PR (`plans/trl-policy-and-signers.md`), published to npm. Anyone — not just TrustSwap — can adopt the gate-then-execute pattern in a few lines. Trust providers other than TRL can plug in by producing a `TrustProfile`-shaped object.
-
-2. **TrustSwap repo (`estmcmxci/trust-swap`)** — the reference *application* on top of those primitives. Composes TRL + Namera + Uniswap Trading API. The CLI, site, and MCP server are the three reference surfaces.
-
-3. **`spec/trust-gated-swap.md`** — short markdown describing the convention: the policy fields, the gate decision shape, the recommended pre-flight ordering, and the error semantics for denials. Pitched as a draft for an ENSIP-style document if it gains traction. The synthesis lib is the reference implementation of the *primitives*; this repo is the reference implementation of the *application*; the spec is the public good that ties them together.
+1. **`@synthesis/resolver@0.2.0`** — already shipped (Layer A). The TRL primitives any reputation-graded app can build on.
+2. **`TrustSwapRouter` Solidity contract** — open-source. Other Trading API consumers can deploy their own variants with different tier tables, different oracle pubkeys, different RiskPolicy enforcement.
+3. **TrustSwap Oracle reference implementation** — open-source. Anyone can run their own oracle for their own router.
+4. **`spec/trust-graded-swap.md`** — formal convention. RiskPolicy schema + storage convention (ENS text record `agent-risk-policy`). Pitched as future ENSIP.
+5. **TrustSwap MCP server (`trust-swap-mcp`)** — distribution surface. Every MCP-aware LLM host gets reputation-graded settlement for free.
 
 ## Out of scope
 
 Explicitly not in v1:
 
-- Custom v4 hook deployment (the post-1.0 stretch — see UniKits for prior art)
-- A full Identity DEX (per-ENS-name token routing) — too ambitious, dropped earlier
-- x402 paywall composition — distinct project, possible follow-up
-- Anonymous trust proofs (zk attestations) — TRL today is fully transparent
-- Cross-chain routing — single chain (Base) for v1; Trading API supports it but the demo doesn't benefit
+- v4 hook deployment (the conceptually-purest framing — Solidity-heavy, would need separate pool deployment, LP bootstrap)
+- Multi-oracle threshold signing (decentralization of the oracle)
+- ZK proofs of off-chain resolution (research-territory, not for hackathon)
+- More than two knobs (max size + fee). Slippage caps, cooldowns, gas sponsorship, etc. are post-v1.
+- Continuous trust score (vs bucketed tiers). Bucketed wins for v1 simplicity.
+- RiskPolicy negotiation protocol (sides can update their RiskPolicy + retry; structured negotiation is post-v1).
+- Per-pool oracle configuration (one oracle for v1).
+- Cross-chain routing (single chain — Base — for v1).
+- x402 paywall composition (distinct project, possible follow-up).
+- Anonymous trust proofs (TRL today is fully transparent).
 
 ## Open questions before coding
 
-1. ~~Does Namera's Call Policy operate on `(target, selector)` or on full calldata?~~ **Answered by reading the namera SDK README + `policy/index.ts`:** `toCallPolicy` accepts `permissions[]` of `{ target, abi, functionName, args, valueLimit }`, where `args` supports per-argument `ParamCondition` (e.g. `LESS_THAN_OR_EQUAL`). For Universal Router's `execute(commands, inputs, deadline)`, we can pin `target` to the Base UR address and constrain `valueLimit`, but `commands` is `bytes` and `inputs` is `bytes[]` — argument-level conditions on opaque calldata are limited. So Namera gates "you can only call execute() on the Universal Router with at most X ETH attached"; TRL gates "the recipient is verified." Together they're tight; neither alone is. Plan stands.
-2. Does the Trading API surface a stable `quote_id` we can pass to `/swap`? If yes, our quote-freshness mitigation simplifies. (Open — investigate during Phase 1 implementation.)
-3. Do we want the gate decision to be *itself* signed and stored as a text record (`last-gate-decision`) for after-the-fact auditability, or kept off-chain only? Tradeoff: signed decisions are a more compelling audit story but add a write per swap.
-4. ~~Should we expose Namera's `executeTransaction` batched shape through the `Signer` interface, or hide it behind a single `executeSwap(...)` call?~~ **Resolved in `plans/trl-policy-and-signers.md`:** the synthesis `Signer` interface ships with `execute(batches: Batch[])` exposed — other Trading-API-on-AA-wallet consumers get the batch shape for free. TrustSwap doesn't get a vote here.
-5. **NEW:** Do we contribute the atomic approve+swap pattern back to `Uniswap/uniswap-ai` as a new skill (`swap-via-aa-wallet`)? Bridges our `FEEDBACK.md` into a real PR. Worth doing post-hackathon regardless of prize outcome.
+1. **Router fee destination.** Where does the fee go? Three options: (a) sent to the oracle operator (us, for hackathon), (b) burned, (c) returned to the recipient as a "trust dividend." Lean toward (a) for hackathon — funds the oracle hosting. Document clearly.
+2. **Attestation binding scope.** Should the attestation bind `(swapper, recipient, expiresAt)` only, or `(swapper, recipient, tokenIn, tokenOut, amountInMax, expiresAt)`? Tighter binding means re-attestation per quote (cost: latency); looser binding means one attestation can be reused for multiple swap shapes (cost: a stolen attestation could be used differently than intended). **My take:** loose binding for hackathon; tighten in v1.1.
+3. **CREATE2 salt for router deployment.** Compute the deterministic address before Phase 2 deploy so the Phase 1 session-key issuance can pin `toCallPolicy` to the correct future address. Manual coordination — script the salt mining.
+4. **`@synthesis/resolver` extension.** Should `resolveRiskPolicy()` live in the synthesis resolver (generic) or in `@trust-swap/core` (app-specific)? **My take:** in `@trust-swap/core` for hackathon. Promote to synthesis if a second consumer adopts the RiskPolicy pattern.
+
+## See also
+
+- [`README.md`](./README.md) — one-paragraph pitch (will need refresh post plan revision)
+- [`FEEDBACK.md`](./FEEDBACK.md) — Uniswap prize requirement
+- [`spec/trust-graded-swap.md`](./spec/trust-graded-swap.md) — graded mode + RiskPolicy convention (to be written next)
+- [`@synthesis/resolver`](https://github.com/estmcmxci/synthesis/tree/main/packages/resolver) — TRL substrate
+- [`spec/trust-policy.md`](https://github.com/estmcmxci/synthesis/blob/main/spec/trust-policy.md) — synthesis-side `gate()` convention (we extend, not replace)
