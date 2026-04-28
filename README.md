@@ -1,38 +1,46 @@
 # TrustSwap
 
-> **Swap with people you can prove are who they claim to be.**
+> **Reputation-graded settlement — settle with anyone the chain says you should.**
 
-A reference implementation of the **gate-then-execute** pattern: every Uniswap swap is gated by a TRL resolution of the counterparty, signed by a policy-bound agent wallet, and settled through the Uniswap Trading API.
+A programmable trust layer between any two parties and the Uniswap pools they use. Every swap routes through `TrustSwapRouter`, an on-chain contract that verifies an off-chain trust attestation and applies **tier-graded execution terms** (per-tier caps + fees) before forwarding to Uniswap's Universal Router. Each side can publish a **`RiskPolicy`** advertising what counterparties they will accept; both sides' policies must be satisfied before the oracle signs.
 
-Three primitives compose, each doing one job:
+Five primitives compose, each doing one job:
 
 | Layer | Provider | Job |
 |---|---|---|
-| Identity / semantic policy | [`@synthesis/resolver`](https://github.com/estmcmxci/synthesis/tree/main/packages/resolver) (TRL) | "Is the counterparty who they claim to be, at the tier I require?" |
-| Wallet / imperative policy | `@namera-ai/sdk` over ZeroDev kernel accounts | "Can this session key call this target, with these args, within these gas / rate / time bounds?" |
-| Settlement | Uniswap Trading API | "Quote and execute the swap." |
+| **TRL substrate** | [`@synthesis/resolver`](https://github.com/estmcmxci/synthesis/tree/main/packages/resolver) | "Resolve `<ens>` to a 5-layer `TrustProfile`." |
+| **TrustSwap Oracle** | This repo (`packages/oracle`) | "Re-resolve both sides, check published RiskPolicies, sign an attestation." |
+| **TrustSwapRouter** | This repo (`packages/contracts`) | "Verify the oracle signature, look up tier-bucket terms, forward to Universal Router." |
+| **Uniswap Trading API** | Uniswap Foundation | "Generate optimal swap calldata for the underlying pools." |
+| **Wallet / session-key policy** | `@namera-ai/sdk` over ZeroDev | "Bound what the session key can call, with what value, how often." |
 
-Neither identity nor wallet policy alone is sufficient. Both gates must agree before any user op broadcasts.
+The router enforces the *intersection* of (router floor, swapper's tier-derived terms, recipient's published RiskPolicy). Most restrictive wins. Tier `none` is the only outright admission denial — every other tier is admitted with graded terms.
 
 ## Status
 
 **Phase −1.B (scaffold).** See [`PLAN.md`](./PLAN.md) for the full execution plan and current phase.
 
-The companion synthesis Trust Resolution Layer (`@synthesis/resolver@0.2.0`) ships the `gate()` policy primitive and `Signer` interface this app composes against — see the [trust-policy spec](https://github.com/estmcmxci/synthesis/blob/main/spec/trust-policy.md).
+The companion synthesis Trust Resolution Layer ([`@synthesis/resolver@0.2.0`](https://github.com/estmcmxci/synthesis/tree/main/packages/resolver)) ships the `gate()` policy primitive and `Signer` interface this app composes against — see the [trust-policy spec](https://github.com/estmcmxci/synthesis/blob/main/spec/trust-policy.md).
+
+## Specification
+
+The graded-router pattern + RiskPolicy schema is formalized in [`spec/trust-graded-swap.md`](./spec/trust-graded-swap.md). It is published as a draft convention, pitched as a future ENSIP if adoption extends beyond this project.
 
 ## Workspace layout
 
 ```
 trust-swap/
-├── PLAN.md                          execution plan (mirrored from synthesis/plans/)
-├── FEEDBACK.md                      Uniswap prize requirement — experience report on the Trading API
+├── PLAN.md                         execution plan
+├── FEEDBACK.md                     Uniswap prize requirement — experience report on the Trading API
 ├── spec/
-│   └── trust-gated-swap.md          short pattern spec for forkers
+│   └── trust-graded-swap.md        graded-router + RiskPolicy convention
 └── packages/
-    ├── core/                        gate-then-execute composition + Trading API client
-    ├── cli/                         `tru` binary — swap, agent run
-    ├── site/                        Next.js — /swap, /agent
-    └── mcp/                         MCP server exposing trust_gated_swap tool
+    ├── core/                       Trading API client + orchestrate + RiskPolicy fetcher + tier-bucket TABLE
+    ├── cli/                        `tru` binary — swap, policy publish/show, agent run
+    ├── site/                       Next.js — /swap, /policy, /agent
+    ├── mcp/                        MCP server exposing trust_gated_swap tool
+    ├── contracts/                  Solidity — TrustSwapRouter (Foundry-managed)
+    └── oracle/                     HTTP signing service (Vercel/CF Workers)
 ```
 
 Each package's `README.md` documents its own surface as it lands.
