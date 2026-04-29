@@ -350,6 +350,92 @@ have eliminated about 30% of TrustSwap's custom code.
 
 ---
 
+## Phase 3 — bidirectional RiskPolicy on ENS (post-router observations)
+
+After Phase 2 shipped the on-chain router + oracle, Phase 3 added
+**RiskPolicy as an ENS text record** (`agent-risk-policy`) and a
+bidirectional check so the oracle enforces both swapper's and recipient's
+declared constraints before signing the attestation. A few observations
+from running this end-to-end against the deployed oracle:
+
+### Bidirectional attestation needs symmetric metadata in the swap payload
+
+The oracle's bidirectional check views each side as receiving something:
+recipient receives `tokenIn`/`amountIn`, swapper receives
+`tokenOut`/`amountOut`. We had to add `amountOut` to our own attestation
+request schema because the existing `quote.output.amount` is denominated in
+the destination token's base units — useful for rendering, not for a
+size-cap comparison against a USD-denominated policy. **A single
+canonical USD-or-stable amount on both sides of every quote response would
+make any attestation-style gating layer 10× simpler to author.** Today we
+each derive it ourselves; tomorrow Uniswap could surface it once.
+
+### ENS text records work great for policy distribution; ENS *reads* are the bottleneck
+
+`tru policy publish` writes a JSON-encoded RiskPolicy to the
+`agent-risk-policy` text record at the canonical resolver. The publish
+path is clean — viem's `walletClient.writeContract` against the ENS
+PublicResolver is a single tx, ~$2-3 mainnet gas
+([`0x4c73ca73…51191`](https://etherscan.io/tx/0x4c73ca73ba4ffacc459b3ce4d9880f9731d1774d83ed8b1d59a9e0fb46351191)).
+The **read** path is where reality bites for production gating:
+
+- **Read-replica lag.** The same Alchemy endpoint that landed our publish
+  tx returned `text(node, "agent-risk-policy")` as `""` for ~30 seconds
+  after inclusion at `latest` blockTag — fine at `--block <inclusion>`
+  immediately. This isn't an ENS bug; it's normal behavior of large RPC
+  providers running multiple read replicas behind their gateway. But it
+  means any Trading-API-style integration that reads ENS records on the
+  hot path needs to pin to `finalized` blockTag (~12s steady-state cost)
+  or accept that an attacker could race a freshly-published stricter
+  policy by sliding their swap into the propagation window.
+
+- **Synthesis resolver flake.** The Trust Resolution Layer fires 5+
+  parallel ENS queries per profile (Personhood, Identity, Context,
+  Manifest, Skill). Under load, individual queries return spurious nulls
+  — most commonly `address: null` for a name that has a real address
+  record, occasionally `tier=none` for a verified profile. Our local
+  orchestrator has a single-purpose `resolveAddress` fallback that
+  recovers cleanly; the deployed Cloudflare Worker oracle does not yet,
+  so a single transient null returns a 400 to the client. Sub-issue
+  filed (TRU-76).
+
+If Trading API ever ships **server-side ENS resolution** (per Tier 1
+above), it will face exactly these two issues and need to choose between
+strict (finalized + retries, slower) and loose (latest + best-effort,
+flaky). Worth a thought now, before the API surface commits.
+
+### Live evidence captured
+
+`scripts/test-bidirectional-policy.ts` + `pnpm test:phase-3` exercises
+the deployed oracle with four scenarios against a real on-chain
+RiskPolicy
+([`kernel.emilemarcelagustin.eth`](https://app.ens.domains/kernel.emilemarcelagustin.eth?tab=records)):
+
+- $1 USDC inbound, all checks satisfied → 200 + signed EIP-191 attestation
+- $200 inbound exceeds $100 cap → 403 with `maxAcceptedSize` error
+- DAI inbound vs USDC-only accept-list → 403 with token error
+- Recipient with no policy → 200, recipient-side check no-ops
+
+Artifacts archived under `infra/test-runs/phase-3/`. The recipient-side
+of the bidirectional check is now end-to-end verified against real ENS
+records, not just unit-tested with mocks.
+
+### Unit mismatch — known seam in any USD-cap-style policy
+
+Our RiskPolicy `maxAcceptedSize` is denominated in 6-decimal USDC base
+units (matches the off-chain tier-bucket table). The oracle and
+orchestrator compare it directly against `amountIn` / `amountOut`, which
+are in the *swap token's* native base units. They line up when the swap
+involves USDC and diverge wildly otherwise (1 WETH = 10^18 base units
+gets compared against 100_000_000 = $100). Fix is structural — any
+policy layer that wants to express USD caps needs the Trading API to
+return a USD-equivalent on both sides of the quote, or every consumer
+re-fetches a `tokenIn → USDC` quote to convert. Tracked locally as
+TRU-77; flagging here because **this is exactly the kind of concern an
+attestation-aware Trading API would smooth over.**
+
+---
+
 ## Closing thought
 
 The Trading API is the right product. The footguns are mostly shape

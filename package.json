@@ -20,7 +20,8 @@
     "session-key:issue": "tsx --env-file=.env scripts/issue-session-key.ts",
     "smoke:uniswap": "tsx --env-file=.env scripts/smoke-uniswap.ts",
     "smoke:bundler": "tsx --env-file=.env scripts/smoke-bundler.ts",
-    "e2e:phase1": "scripts/e2e-phase1.sh"
+    "e2e:phase1": "scripts/e2e-phase1.sh",
+    "test:phase-3": "tsx --env-file=.env scripts/test-bidirectional-policy.ts"
   },
   "devDependencies": {
     "@namera-ai/sdk": "^0.1.0",

@@ -1,0 +1,29 @@
+{
+  "scenario": "C-recipient-token-reject",
+  "description": "Recipient policy acceptedTokens=[USDC]; request DAI inbound. Recipient-side check should fire with token error.",
+  "request": {
+    "swapperEns": "emilemarcelagustin.eth",
+    "recipientEns": "kernel.emilemarcelagustin.eth",
+    "swapper": "0xeb0ABB367540f90B57b3d5719fd2b9c740a15022",
+    "recipient": "0xB1FF4fBC384ffC2407342d05b2bC47f0e6788d45",
+    "tokenIn": "0x50c5725949a6f0c72e6c4a641f24049a917db0cb",
+    "tokenOut": "0x4200000000000000000000000000000000000006",
+    "amountIn": "1000000",
+    "amountOut": "300000000000000",
+    "calldataHash": "0xabababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "status": 403,
+    "errorContains": "does not accept token"
+  },
+  "response": {
+    "status": 403,
+    "body": {
+      "error": "recipient RiskPolicy does not accept token 0x50c5725949a6f0c72e6c4a641f24049a917db0cb",
+      "hint": "recipient accepts: 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+    }
+  },
+  "durationMs": 14862,
+  "recordedAt": "2026-04-29T21:19:21.537Z",
+  "passed": true
+}
