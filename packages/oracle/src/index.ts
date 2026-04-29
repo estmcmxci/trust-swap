@@ -283,10 +283,13 @@ app.post("/attest", async (c) => {
   // `amountOut` only lines up when the swap involves USDC. We fetch a
   // `token → USDC` Trading-API quote to value non-USDC inputs.
   //
-  // If `UNISWAP_API_KEY` is unset OR the valuation call fails, we fall
-  // back to passing 0n, which silently skips the size check (defense:
-  // tier + token + router floor still bind). The audit log records the
-  // skip so deployments without the key are observable.
+  // If `UNISWAP_API_KEY` is unset OR a valuation call fails, that side's
+  // size check skips (defense: tier + token + router floor still bind).
+  // **Per-side isolation (codex P1, PR #5)**: each valuation runs in its
+  // own try/catch so a single rejection (e.g. one token quote fails)
+  // doesn't disable the *other* side's size check. An attacker who can
+  // cause one valuation to fail must NOT thereby bypass the other
+  // policy's cap.
   const chainIdForValuation =
     Number(env.ATTEST_CHAIN_ID ?? "8453") || 8453;
   const tradingApiKey = env.UNISWAP_API_KEY;
@@ -304,45 +307,67 @@ app.post("/attest", async (c) => {
 
   let amountInUsdc = 0n;
   let amountOutUsdc = 0n;
-  let valuationSkipped: string | null = null;
+  const valuationSkipReasons: Array<{ side: "in" | "out"; reason: string }> =
+    [];
 
   if (recipientPolicyHasSize || swapperPolicyHasSize) {
     if (!tradingApiKey) {
-      valuationSkipped = "UNISWAP_API_KEY unset — size check skipped";
+      const reason = "UNISWAP_API_KEY unset — size check skipped";
+      if (recipientPolicyHasSize)
+        valuationSkipReasons.push({ side: "in", reason });
+      if (swapperPolicyHasSize)
+        valuationSkipReasons.push({ side: "out", reason });
     } else {
-      try {
-        [amountInUsdc, amountOutUsdc] = await Promise.all([
-          recipientPolicyHasSize
-            ? valueInUsdcViaTradingApi({
-                token: body.tokenIn,
-                amount: amountIn,
-                chainId: chainIdForValuation,
-                swapper: body.swapper,
-                apiKey: tradingApiKey,
-                apiUrl: tradingApiUrl,
-              })
-            : Promise.resolve(0n),
-          swapperPolicyHasSize
-            ? valueInUsdcViaTradingApi({
-                token: body.tokenOut,
-                amount: swapperInboundAmount,
-                chainId: chainIdForValuation,
-                swapper: body.swapper,
-                apiKey: tradingApiKey,
-                apiUrl: tradingApiUrl,
-              })
-            : Promise.resolve(0n),
-        ]);
-      } catch (err) {
-        valuationSkipped = `valuation call failed: ${err instanceof Error ? err.message : "unknown"}`;
+      // Run both valuations concurrently but isolate their failure
+      // domains. Promise.allSettled means a single reject doesn't drop
+      // the sibling result on the floor — the surviving side still gets
+      // its size check enforced.
+      const [inResult, outResult] = await Promise.allSettled([
+        recipientPolicyHasSize
+          ? valueInUsdcViaTradingApi({
+              token: body.tokenIn,
+              amount: amountIn,
+              chainId: chainIdForValuation,
+              swapper: body.swapper,
+              apiKey: tradingApiKey,
+              apiUrl: tradingApiUrl,
+            })
+          : Promise.resolve(0n),
+        swapperPolicyHasSize
+          ? valueInUsdcViaTradingApi({
+              token: body.tokenOut,
+              amount: swapperInboundAmount,
+              chainId: chainIdForValuation,
+              swapper: body.swapper,
+              apiKey: tradingApiKey,
+              apiUrl: tradingApiUrl,
+            })
+          : Promise.resolve(0n),
+      ]);
+      if (inResult.status === "fulfilled") {
+        amountInUsdc = inResult.value;
+      } else if (recipientPolicyHasSize) {
+        valuationSkipReasons.push({
+          side: "in",
+          reason: `tokenIn valuation failed: ${inResult.reason instanceof Error ? inResult.reason.message : String(inResult.reason)}`,
+        });
+      }
+      if (outResult.status === "fulfilled") {
+        amountOutUsdc = outResult.value;
+      } else if (swapperPolicyHasSize) {
+        valuationSkipReasons.push({
+          side: "out",
+          reason: `tokenOut valuation failed: ${outResult.reason instanceof Error ? outResult.reason.message : String(outResult.reason)}`,
+        });
       }
     }
   }
-  if (valuationSkipped) {
+  for (const skip of valuationSkipReasons) {
     console.log(
       JSON.stringify({
         event: "attest.size-check-skipped",
-        reason: valuationSkipped,
+        side: skip.side,
+        reason: skip.reason,
         swapperEns: body.swapperEns,
         recipientEns: body.recipientEns,
       }),
