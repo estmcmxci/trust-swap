@@ -7,8 +7,28 @@ libs = ["lib"]
 solc_version = "0.8.28"
 optimizer = true
 optimizer_runs = 10_000
-via_ir = false
+via_ir = true
 fs_permissions = [{ access = "read", path = "./" }]
+
+# Fuzzing — TrustSwapRouter has a small, deterministic state space (tier
+# bucket lookup, nonce table, attestation expiry, EOA-vs-router calldata
+# forwarding). 256 runs at depth 15 keeps the suite under a second locally
+# while still surfacing edge cases (overflow boundaries, off-by-one tiers).
+[fuzz]
+runs = 256
+max_test_rejects = 65_536
+seed = "0x0"
+
+[invariant]
+runs = 256
+depth = 15
+fail_on_revert = true
+
+# CI profile — bump fuzz iterations + run with a different seed so we get
+# cumulative coverage across CI invocations once GH Actions lands.
+[profile.ci]
+fuzz = { runs = 10_000 }
+invariant = { runs = 1_000, depth = 32 }
 
 [fmt]
 line_length = 100

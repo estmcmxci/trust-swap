@@ -56,13 +56,12 @@ export {
   type HaltReason,
 } from "./orchestrate.js";
 
-// Re-export attestation types so consumers don't need a direct dep on @trust-swap/oracle.
 export type {
   AttestRequest,
   AttestResponse,
   AttestErrorResponse,
   Attestation,
-} from "@trust-swap/oracle";
+} from "./attestation.js";
 
 export {
   createTradingClient,

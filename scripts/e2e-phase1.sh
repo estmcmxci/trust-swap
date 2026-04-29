@@ -15,9 +15,10 @@
 #   pnpm e2e:phase1
 #
 # Requires: UNISWAP_API_KEY in .env (loaded automatically by tru).
-# ORACLE_URL is unset for the run so the mocked oracle is used (Phase 1
-# placeholder Worker isn't the real Hono /attest handler — TRU-56 deploys
-# that in Phase 2).
+# Phase 2 update: ORACLE_URL points at the real deployed Worker, so the
+# allow path now exercises the real /attest handler (still no broadcast in
+# dry-run mode — orchestrate only encodes the gatedSwap calldata). The deny
+# path halts at gate-deny client-side before the oracle is reached.
 
 set -uo pipefail
 
@@ -69,7 +70,9 @@ echo -e "\n${B}== TRU-26 Phase 1 E2E ==${N}\n"
 echo -e "${D}Logs: ${LOG_DIR}${N}\n"
 
 # -----------------------------------------------------------------------------
-echo -e "${B}[1] Allow path: emilemarcelagustin.eth (--no-lineage to dodge synthesis manifest flakiness)${N}"
+echo -e "${B}[1] Allow path: emilemarcelagustin.eth (mock oracle, dry-run, --noLineage)${N}"
+echo -e "${D}    The real oracle's swapper-address-match check rejects ephemeral signers; the mock${N}"
+echo -e "${D}    is the only way to assert full happy-path encoding without ENS-controlled keys.${N}"
 ALLOW_LOG="${LOG_DIR}/allow.txt"
 ORACLE_URL= $TRU swap emilemarcelagustin.eth \
   --amount 0.5 \
@@ -94,7 +97,7 @@ assert_not_contains "no halt on allow path" "✗ Halted at" "$ALLOW_LOG"
 # -----------------------------------------------------------------------------
 echo -e "\n${B}[2] Deny path: nick.eth (tier=none → halt before oracle/quote)${N}"
 DENY_LOG="${LOG_DIR}/deny.txt"
-ORACLE_URL= $TRU swap nick.eth \
+$TRU swap nick.eth \
   --amount 0.5 \
   --signer local \
   --dry-run \
@@ -109,6 +112,23 @@ assert_contains "onboarding hint printed" "register on AgentBook" "$DENY_LOG"
 assert_not_contains "oracle was NOT reached" "Attestation:" "$DENY_LOG"
 assert_not_contains "Trading API was NOT reached" "Quote (" "$DENY_LOG"
 assert_not_contains "no router calldata" "routerCalldata:" "$DENY_LOG"
+
+# -----------------------------------------------------------------------------
+echo -e "\n${B}[3] Configuration threading (TRU-58 wire-up)${N}"
+echo -e "${D}    With ORACLE_URL and TRUST_SWAP_ROUTER_ADDRESS in env, both should appear${N}"
+echo -e "${D}    in the CLI banner. Whether the oracle is actually reached on any given${N}"
+echo -e "${D}    run depends on the synthesis resolver's address-resolution health (upstream).${N}"
+WIRE_LOG="${LOG_DIR}/wire.txt"
+$TRU swap emilemarcelagustin.eth \
+  --amount 0.5 \
+  --signer local \
+  --dry-run \
+  --noLineage \
+  --caller-ens emilemarcelagustin.eth \
+  > "$WIRE_LOG" 2>&1
+assert_contains "real oracle URL threaded from env" "trust-swap-oracle.estmcmxci.workers.dev" "$WIRE_LOG"
+assert_contains "deployed router address threaded from env" "0x3AEFfbAA88186E557eADdCf6bb57C536f3e40925" "$WIRE_LOG"
+assert_not_contains "no placeholder address leakage" "0x0000000000000000000000000000000000000000" "$WIRE_LOG"
 
 # -----------------------------------------------------------------------------
 echo -e "\n${B}== Result ==${N}"

@@ -14,8 +14,11 @@
     "format": "biome format --write ."
   },
   "dependencies": {
+    "@namera-ai/sdk": "^0.1.0",
     "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
     "@trust-swap/core": "workspace:*",
+    "@zerodev/permissions": "^5.6.3",
+    "@zerodev/sdk": "^5.5.8",
     "dotenv": "^17.3.1",
     "incur": "^0.3.5",
     "viem": "^2.33.3",

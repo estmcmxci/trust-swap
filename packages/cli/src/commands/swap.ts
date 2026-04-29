@@ -1,5 +1,6 @@
 import colors from "yoctocolors";
 import { formatUnits, parseUnits } from "viem";
+import { isAddress, type Address } from "viem";
 import {
   createMockOracleClient,
   createHttpOracleClient,
@@ -7,6 +8,7 @@ import {
   defaultSwapPolicy,
   isUniswapXQuote,
   orchestrate,
+  PLACEHOLDER_ROUTER_ADDRESS,
   type OrchestrateResult,
   type OracleClient,
   type TrustPolicy,
@@ -113,6 +115,24 @@ export async function runSwap(
     requireSig: options.noSig ? false : defaultSwapPolicy.requireSig,
   };
 
+  // Router address — required for non-dry-run (orchestrate refuses to
+  // broadcast against PLACEHOLDER). Phase 2 deploy lives at TRUST_SWAP_
+  // ROUTER_ADDRESS in env; pass it through whenever set.
+  const envRouter = process.env.TRUST_SWAP_ROUTER_ADDRESS;
+  let routerAddress: Address | undefined;
+  if (envRouter && envRouter !== "" && envRouter !== PLACEHOLDER_ROUTER_ADDRESS) {
+    if (!isAddress(envRouter)) {
+      throw new Error(`TRUST_SWAP_ROUTER_ADDRESS is not a valid 0x address: ${envRouter}`);
+    }
+    routerAddress = envRouter as Address;
+    console.log(colors.dim(`  router: ${routerAddress}`));
+  } else if (!dryRun) {
+    throw new Error(
+      "TRUST_SWAP_ROUTER_ADDRESS not set — required for non-dry-run. Set it in .env or pass --dry-run.",
+    );
+  }
+  console.log();
+
   const result = await orchestrate({
     recipientEns: options.recipient,
     tokenIn: tokenIn.address,
@@ -123,6 +143,7 @@ export async function runSwap(
     tradingClient,
     oracleClient,
     policy,
+    routerAddress,
     dryRun,
   });
 

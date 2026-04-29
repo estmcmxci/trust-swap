@@ -1,0 +1,25 @@
+{
+  "chain": "base",
+  "chainId": 8453,
+  "address": "0x4aFa38bC5A775B08826f8644327C0c435fF5BD3a",
+  "deployer": "0x287B2526e78720bA5A4C0198422aa5907a83fa4F",
+  "deployBlock": null,
+  "create2Salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "constructor": {
+    "oraclePubkey": "0xB70d715b7ec382789c17834E8c5EA78548885106",
+    "feeRecipient": "0xB70d715b7ec382789c17834E8c5EA78548885106"
+  },
+  "wraps": {
+    "universalRouter": "0x6fF5693b99212Da76ad316178A184AB56D299b43"
+  },
+  "deployedAt": "2026-04-29T19:42:00Z",
+  "verifiedOnBaseScan": false,
+  "basescan": "https://basescan.org/address/0x4aFa38bC5A775B08826f8644327C0c435fF5BD3a",
+  "firstBroadcast": "https://basescan.org/tx/0x45ee201299643adbd4bd8cabfc0825e730b511e063bb3c14414ecbc0f36fd228",
+  "supersedes": {
+    "address": "0x3AEFfbAA88186E557eADdCf6bb57C536f3e40925",
+    "deployTxHash": "0x775f8b8aa75bd1ab66492aadef11fefb8299f6eaf70af4c7821d7bfed185a243",
+    "supersededReason": "Codex P1 #2 — Attestation gained `bytes32 calldataHash` to bind the signed attestation to the exact `universalRouterCalldata` payload, preventing attestation replay against a different swap shape. New ABI → new function selector → new bytecode → new CREATE2 address.",
+    "firstBroadcast": "https://basescan.org/tx/0x3744af390baf136dbe2402978ecd448eba7dec2053fbe361ee1e2c428d3b33a2"
+  }
+}

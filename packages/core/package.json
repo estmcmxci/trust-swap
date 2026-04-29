@@ -20,7 +20,6 @@
   },
   "dependencies": {
     "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
-    "@trust-swap/oracle": "workspace:*",
     "viem": "^2.33.3",
     "zod": "^3.24.2"
   },

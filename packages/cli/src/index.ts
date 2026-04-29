@@ -1,5 +1,11 @@
 #!/usr/bin/env -S node --no-deprecation
-import "dotenv/config";
+// Load both `.env` (committed-shape config) and `.env.local` (gitignored
+// session-key private key + other run-only secrets). `.env.local` takes
+// precedence so a re-issued session key doesn't get clobbered by a stale
+// .env entry.
+import { config } from "dotenv";
+config({ path: ".env" });
+config({ path: ".env.local", override: true });
 /**
  * tru CLI — TrustSwap command surface.
  *
@@ -70,11 +76,11 @@ cli.command("swap", {
     dryRun: z
       .boolean()
       .optional()
-      .describe("Skip signer.execute(...) and return a synthetic txHash. Default: true (Phase 1)"),
+      .describe("Skip signer.execute(...) and return a synthetic txHash. Default: false in Phase 2+ (router deployed); pass --dry-run to opt back into the no-broadcast path."),
     noDryRun: z
       .boolean()
       .optional()
-      .describe("Force broadcast — only takes effect once Phase 2's router is deployed"),
+      .describe("Legacy alias — same as omitting --dry-run."),
     noLineage: z
       .boolean()
       .optional()
@@ -103,8 +109,9 @@ cli.command("swap", {
     },
   ],
   async run({ args, options }) {
+    // Phase 2 default: broadcast. Pass --dry-run to opt out.
     const dryRun =
-      options.noDryRun === true ? false : options.dryRun ?? true;
+      options.dryRun === true ? true : options.noDryRun === true ? false : false;
     const result = await runSwap({
       recipient: args.recipient,
       tokenIn: options.tokenIn,

@@ -1,25 +1,34 @@
-import { encodeFunctionData, isAddress, type Address, type Hex } from "viem";
 import {
+  encodeFunctionData,
+  isAddress,
+  keccak256,
+  type Address,
+  type Hex,
+} from "viem";
+import {
+  createEnsClient,
   gate,
   resolve,
+  resolveAddress,
   type GateDecision,
   type ResolveOptions,
   type Signer,
   type TrustPolicy,
   type TrustProfile,
 } from "@synthesis/resolver";
+import type { TrustTier } from "@synthesis/resolver";
 import type {
   AttestRequest,
   AttestResponse,
   Attestation,
-  TrustTier,
-} from "@trust-swap/oracle";
-import { defaultSwapPolicy, tierBucket } from "./policy.js";
+} from "./attestation.js";
+import { defaultSwapPolicy } from "./policy.js";
 import { resolveRiskPolicy, type RiskPolicy } from "./risk-policy.js";
-import type {
-  QuoteResponse,
-  SwapTransaction,
-  TradingClient,
+import {
+  isUniswapXQuote,
+  type QuoteResponse,
+  type SwapTransaction,
+  type TradingClient,
 } from "./trading.js";
 
 // ---------------------------------------------------------------------------
@@ -75,6 +84,12 @@ export function createMockOracleClient(
           recipientTier: opts.recipientTier ?? "verified",
           expiresAt: now() + 300,
           nonce: Math.floor(Math.random() * 0xffffffff),
+          // Echo whatever calldataHash the caller sent so the mock-driven
+          // contract path still passes the on-chain hash check. If the
+          // caller didn't supply one (e.g. unit tests that don't broadcast),
+          // fall back to a zero hash.
+          calldataHash:
+            req.calldataHash ?? (`0x${"00".repeat(32)}` as Hex),
         },
         signature: opts.signature ?? PLACEHOLDER_SIG,
       };
@@ -146,6 +161,7 @@ const GATED_SWAP_ABI = [
           { name: "recipientTier", type: "uint8" },
           { name: "expiresAt", type: "uint256" },
           { name: "nonce", type: "uint256" },
+          { name: "calldataHash", type: "bytes32" },
         ],
       },
       { name: "oracleSig", type: "bytes" },
@@ -180,6 +196,7 @@ export function buildGatedSwapCalldata(args: {
         recipientTier: TIER_INDEX[args.attestation.recipientTier],
         expiresAt: BigInt(args.attestation.expiresAt),
         nonce: BigInt(args.attestation.nonce),
+        calldataHash: args.attestation.calldataHash,
       },
       args.oracleSig,
     ],
@@ -272,7 +289,7 @@ export async function orchestrate(
   const routerAddress = opts.routerAddress ?? PLACEHOLDER_ROUTER_ADDRESS;
   const resolveTP = opts.resolveTrustProfile ?? resolve;
   const resolveRP = opts.resolveRiskPolicyFn ?? resolveRiskPolicy;
-  const dryRun = opts.dryRun ?? true; // Phase 1 default: never broadcast
+  const dryRun = opts.dryRun ?? false; // Phase 2 default: broadcast (router live)
 
   // Refuse to broadcast against the placeholder. Without this, a caller who
   // forgets to pass `routerAddress` while flipping `dryRun: false` would send
@@ -286,8 +303,16 @@ export async function orchestrate(
     );
   }
 
-  // 1. Resolve the recipient through TRL.
-  const recipientProfile = await resolveTP(opts.recipientEns, opts.resolveOptions);
+  // 1. Resolve the recipient through TRL. If the recipient is a subname
+  //    (3+ labels) and resolves tier=none, walk up one level and inherit
+  //    the parent's profile — same semantics as the oracle. Subname
+  //    creation is gated by parent ownership on ENS, so an existing
+  //    subname is implicit delegation from the parent.
+  const recipientProfile = await resolveWithSubnameInheritance(
+    opts.recipientEns,
+    opts.resolveOptions,
+    resolveTP,
+  );
 
   // 2. Fetch the recipient's RiskPolicy (may be null).
   const recipientRiskPolicy = await resolveRP(opts.recipientEns);
@@ -333,49 +358,9 @@ export async function orchestrate(
     amount = recipientRiskPolicy.maxAcceptedSize;
   }
 
-  // 5. Request attestation from the oracle. Tier=none on either side or a
-  //    RiskPolicy mismatch turns into `OracleRefusalError`.
-  let attestation: Attestation;
-  let attestationSignature: Hex;
-  try {
-    const result = await opts.oracleClient.attest({
-      swapper: opts.signer.address,
-      recipient: recipientProfile.address as Address,
-      tokenIn: opts.tokenIn,
-      tokenOut: opts.tokenOut,
-      amountIn: amount.toString(),
-    });
-    attestation = result.attestation;
-    attestationSignature = result.signature;
-  } catch (err) {
-    if (err instanceof OracleRefusalError) {
-      return {
-        decision,
-        recipientProfile,
-        recipientRiskPolicy,
-        clampApplied,
-        haltedAt: "oracle-refusal",
-        onboardingHint: err.hint ?? err.message,
-      };
-    }
-    throw err;
-  }
-
-  // 6. Apply the swapper-side tier-bucket cap derived from the attestation.
-  //    The router will revert if violated; pre-clamping keeps the local
-  //    diagnostic honest.
-  const swapperBucket = tierBucket[attestation.swapperTier];
-  if (amount > swapperBucket.maxTradeSize) {
-    const original = clampApplied?.original ?? opts.amount;
-    clampApplied = {
-      reason: `swapper tier=${attestation.swapperTier} maxTradeSize=${swapperBucket.maxTradeSize}`,
-      original,
-      clamped: swapperBucket.maxTradeSize,
-    };
-    amount = swapperBucket.maxTradeSize;
-  }
-
-  // 7. Fetch the quote + swap calldata from Trading API.
+  // 5. Fetch the quote + swap calldata from Trading API FIRST. The
+  //    attestation now binds to a `calldataHash` (= keccak256 of the UR
+  //    calldata), so the calldata must exist before the oracle signs.
   let quote: QuoteResponse;
   let swapTransaction: SwapTransaction;
   try {
@@ -394,8 +379,6 @@ export async function orchestrate(
       decision,
       recipientProfile,
       recipientRiskPolicy,
-      attestation,
-      attestationSignature,
       clampApplied,
       haltedAt: "quote-failed",
       onboardingHint:
@@ -403,9 +386,74 @@ export async function orchestrate(
     };
   }
 
-  // 8. Encode the gatedSwap calldata. This wraps the Universal Router
-  //    calldata, the oracle attestation, and the oracle signature into
-  //    one call against the future TrustSwapRouter.
+  // 6. Encode the would-be gatedSwap calldata against a SENTINEL
+  //    attestation, then extract the UR calldata to hash. We need the
+  //    hash before we can ask the oracle to sign — so we don't yet have a
+  //    real attestation; the contract's `keccak256(universalRouterCalldata)
+  //    == att.calldataHash` check uses ONLY the bytes of `swapTransaction.data`,
+  //    which is what the oracle will be asked to attest.
+  const calldataHash = keccak256(swapTransaction.data);
+  const expectedOutAmount = isUniswapXQuote(quote)
+    ? quote.quote.orderInfo.outputs[0]?.endAmount ??
+      quote.quote.orderInfo.outputs[0]?.startAmount
+    : quote.quote.output.amount;
+
+  // 7. Request attestation from the oracle. The HTTP oracle re-resolves
+  //    both sides via TRL, runs bidirectional RiskPolicy with the real
+  //    `amountInbound` for the swapper-side check (closes Codex P2 #3),
+  //    and signs over a tuple that includes `calldataHash` (closes Codex
+  //    P1 #2 — attestations bind to the exact swap shape).
+  //
+  //    Codex P1 #1 — fail-fast when callerEns is missing on the HTTP path
+  //    instead of letting the oracle's 400 bubble as an unhandled error.
+  if (!opts.callerEns) {
+    return {
+      decision,
+      recipientProfile,
+      recipientRiskPolicy,
+      quote,
+      swapTransaction,
+      clampApplied,
+      haltedAt: "oracle-refusal",
+      onboardingHint:
+        "callerEns (--caller-ens) is required when using a real oracle. Pass your identity ENS so the oracle can re-resolve your TrustProfile.",
+    };
+  }
+  let attestation: Attestation;
+  let attestationSignature: Hex;
+  try {
+    const result = await opts.oracleClient.attest({
+      swapperEns: opts.callerEns,
+      recipientEns: opts.recipientEns,
+      swapper: opts.signer.address,
+      recipient: recipientProfile.address as Address,
+      tokenIn: opts.tokenIn,
+      tokenOut: opts.tokenOut,
+      amountIn: amount.toString(),
+      amountOut: expectedOutAmount,
+      calldataHash,
+    });
+    attestation = result.attestation;
+    attestationSignature = result.signature;
+  } catch (err) {
+    if (err instanceof OracleRefusalError) {
+      return {
+        decision,
+        recipientProfile,
+        recipientRiskPolicy,
+        quote,
+        swapTransaction,
+        clampApplied,
+        haltedAt: "oracle-refusal",
+        onboardingHint: err.hint ?? err.message,
+      };
+    }
+    throw err;
+  }
+
+  // 8. Encode the gatedSwap calldata. The contract verifies
+  //    `keccak256(universalRouterCalldata) == att.calldataHash` before
+  //    forwarding — replays against a different swap shape revert.
   const routerCalldata = buildGatedSwapCalldata({
     universalRouterCalldata: swapTransaction.data,
     attestation,
@@ -480,6 +528,57 @@ export async function orchestrate(
 // Maps `gate()` deny reasons to actionable suggestions. Phase 3 (`tru policy
 // publish`) extends this with RiskPolicy-driven hints; this is the floor.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Subname tier inheritance
+//
+// Mirrors the oracle's `inheritTierFromParent` (packages/oracle/src/index.ts).
+// Replaces the ENS-name + address fields with the subname's, but inherits
+// every TRL-layer field from the parent — so `gate()` checks like
+// `requireLineage` and `requireSig` use the parent's verified manifest data
+// when they exist on the parent ENS.
+// ---------------------------------------------------------------------------
+
+async function resolveWithSubnameInheritance(
+  ensName: string,
+  resolveOptions: ResolveOptions | undefined,
+  resolveTP: (
+    ensName: string,
+    options?: ResolveOptions,
+  ) => Promise<TrustProfile>,
+): Promise<TrustProfile> {
+  const profile = await resolveTP(ensName, resolveOptions);
+  if (profile.trustScore !== "none") return profile;
+  const labels = ensName.split(".");
+  if (labels.length < 3) return profile;
+  const parent = ensName.slice(ensName.indexOf(".") + 1);
+  try {
+    const parentProfile = await resolveTP(parent, resolveOptions);
+    if (parentProfile.trustScore === "none") return profile;
+    // Synthesis's `resolve()` occasionally returns `address: null` for
+    // subnames even when the address record is set (intermittent ENS RPC
+    // flakiness across the parallel layer queries). Fall back to a
+    // single-purpose live ENS lookup — same data source, fewer parallel
+    // calls = fewer races. No hardcode; the address comes from whatever
+    // the ENS contract returns for `ensName` at request time.
+    let address = profile.address;
+    if (!address) {
+      try {
+        const client = createEnsClient(resolveOptions?.ensRpcUrl);
+        address = await resolveAddress(client, ensName);
+      } catch {
+        // swallow — keep original null
+      }
+    }
+    return {
+      ...parentProfile,
+      ensName,
+      address,
+    };
+  } catch {
+    return profile;
+  }
+}
 
 function onboardingHintFor(decision: GateDecision): string {
   const reason = decision.reason;
