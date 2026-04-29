@@ -72,7 +72,23 @@ const AttestRequestSchema = z.object({
   recipient: AddressSchema,
   tokenIn: AddressSchema,
   tokenOut: AddressSchema,
-  amountIn: z.string().regex(/^\d+$/, "amountIn must be a base-10 integer string"),
+  amountIn: z
+    .string()
+    .regex(/^\d+$/, "amountIn must be a base-10 integer string"),
+  // Reverse-direction RiskPolicy size check uses this against the
+  // swapper's `maxAcceptedSize`. Optional for now so legacy mock callers
+  // keep working; real callers should always send it.
+  amountOut: z
+    .string()
+    .regex(/^\d+$/, "amountOut must be a base-10 integer string")
+    .optional(),
+  // `keccak256(universalRouterCalldata)`. The signed attestation binds to
+  // this hash; the on-chain router rejects calldata that doesn't match.
+  calldataHash: z
+    .string()
+    .regex(/^0x[0-9a-fA-F]{64}$/, "calldataHash must be 0x + 64 hex chars")
+    .optional()
+    .transform((v) => (v ? (v as `0x${string}`) : undefined)),
 });
 
 // ---------------------------------------------------------------------------
@@ -235,6 +251,11 @@ app.post("/attest", async (c) => {
     return c.json<AttestErrorResponse>(fromSwapperToRecipient.error, 403);
   }
 
+  // Codex P2 #3: enforce the swapper's `maxAcceptedSize` against the
+  // amount they will RECEIVE (tokenOut) — not 0n. If the caller
+  // didn't supply `amountOut` (legacy mock path), this falls back to 0n
+  // and the size check is silently skipped, same as before.
+  const swapperInboundAmount = body.amountOut ? BigInt(body.amountOut) : 0n;
   const fromRecipientToSwapper = checkRiskPolicy({
     sourceLabel: "swapper",
     policy: swapperRiskPolicy,
@@ -242,11 +263,8 @@ app.post("/attest", async (c) => {
     counterpartyManifestSigValid:
       recipientProfile.manifest.found &&
       recipientProfile.manifest.signatureValid,
-    // Reverse direction: the swapper's policy applies to whatever they
-    // receive (tokenOut) and however much they accept back. For the v1
-    // single-direction swap this is mostly the tokenOut check.
     tokenInbound: body.tokenOut,
-    amountInbound: 0n,
+    amountInbound: swapperInboundAmount,
   });
   if (fromRecipientToSwapper.error) {
     return c.json<AttestErrorResponse>(fromRecipientToSwapper.error, 403);
@@ -263,6 +281,13 @@ app.post("/attest", async (c) => {
     recipientTier: recipientEffectiveTier,
     expiresAt,
     nonce,
+    // Bind to the exact swap calldata. Falls back to a zero hash when the
+    // caller didn't supply one (legacy mock callers / pre-quote diagnostic
+    // mode). The on-chain router will reject the zero-hash path because
+    // `keccak256(real_calldata) != 0x000…`, which is the correct safety
+    // — only intentional binding produces a usable attestation.
+    calldataHash:
+      body.calldataHash ?? (`0x${"00".repeat(32)}` as Hex),
   };
 
   // 6. Sign. The contract verifies via
@@ -405,6 +430,7 @@ function encodeAttestationDigest(att: Attestation): Hex {
         { type: "uint8" },
         { type: "uint256" },
         { type: "uint256" },
+        { type: "bytes32" },
       ],
       [
         att.swapper,
@@ -413,6 +439,7 @@ function encodeAttestationDigest(att: Attestation): Hex {
         TIER_INDEX[att.recipientTier],
         BigInt(att.expiresAt),
         BigInt(att.nonce),
+        att.calldataHash,
       ],
     ),
   );

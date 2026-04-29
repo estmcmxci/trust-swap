@@ -58,6 +58,25 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
         router.gatedSwap{value: 1_000_000}(forwardedCalldata, tampered, sig);
     }
 
+    function test_RejectsCalldataMismatch() public {
+        // The oracle signed an attestation whose `calldataHash` matches the
+        // default `forwardedCalldata`. If the caller forwards DIFFERENT
+        // calldata (a different swap shape — different tokens, amounts, or
+        // pool — encoded into the UR commands), the contract must reject.
+        // Without this check, valid attestations could be replayed with
+        // arbitrary swap parameters.
+        TrustSwapRouter.Attestation memory att = _buildAttestation(
+            TrustSwapRouter.TrustTier.Verified,
+            TrustSwapRouter.TrustTier.Verified,
+            150
+        );
+        bytes memory sig = _signAttestation(att);
+
+        bytes memory tamperedCalldata = hex"deadbeef00";
+        vm.expectPartialRevert(TrustSwapRouter.CalldataHashMismatch.selector);
+        router.gatedSwap{value: 1_000_000}(tamperedCalldata, att, sig);
+    }
+
     function test_AcceptsValidOracleSignature() public {
         TrustSwapRouter.Attestation memory att = _buildAttestation(
             TrustSwapRouter.TrustTier.Verified,
@@ -180,10 +199,11 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
 
     function test_UniversalRouterForwardingByteExact() public {
         bytes memory specific = hex"1234567890abcdef0011223344";
-        TrustSwapRouter.Attestation memory att = _buildAttestation(
+        TrustSwapRouter.Attestation memory att = _buildAttestationWithCalldata(
             TrustSwapRouter.TrustTier.Full,
             TrustSwapRouter.TrustTier.Full,
-            500
+            500,
+            specific
         );
         bytes memory sig = _signAttestation(att);
 
@@ -199,10 +219,11 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
         // Verified tier: 25 bps fee. msg.value = 1 ether. UR gets
         // (1 ether - 25/10_000 * 1 ether) = 0.9975 ether.
         bytes memory specific = hex"abcdef";
-        TrustSwapRouter.Attestation memory att = _buildAttestation(
+        TrustSwapRouter.Attestation memory att = _buildAttestationWithCalldata(
             TrustSwapRouter.TrustTier.Verified,
             TrustSwapRouter.TrustTier.Verified,
-            501
+            501,
+            specific
         );
         bytes memory sig = _signAttestation(att);
 

@@ -188,8 +188,12 @@ async function main() {
   // TrustSwapRouter. Permission fields don't constrain the calldata args
   // here (the router itself enforces gating); we just lock down the
   // (target, function) pair.
+  // Must match the deployed router's `gatedSwap` signature exactly. The
+  // function selector encodes the full param shape; ZeroDev's `toCallPolicy`
+  // validator rejects calls whose selector doesn't match this ABI.
+  // Last updated when `Attestation` gained `calldataHash` (Codex P1 #2).
   const ROUTER_ABI = parseAbi([
-    "function gatedSwap(bytes universalRouterCalldata, (address swapper, address recipient, uint8 swapperTier, uint8 recipientTier, uint256 expiresAt, uint256 nonce) attestation, bytes oracleSig) external payable",
+    "function gatedSwap(bytes universalRouterCalldata, (address swapper, address recipient, uint8 swapperTier, uint8 recipientTier, uint256 expiresAt, uint256 nonce, bytes32 calldataHash) attestation, bytes oracleSig) external payable",
   ]);
   const callPolicy = toCallPolicy({
     policyVersion: CallPolicyVersion.V0_0_4,

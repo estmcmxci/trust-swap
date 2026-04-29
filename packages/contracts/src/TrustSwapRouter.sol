@@ -29,6 +29,11 @@ contract TrustSwapRouter {
     /// @notice Canonical attestation bytes the oracle signs over
     ///         `keccak256(abi.encode(att))`. The same shape is encoded by
     ///         `buildGatedSwapCalldata()` off-chain.
+    /// @dev    `calldataHash` binds the attestation to a specific
+    ///         `universalRouterCalldata` payload — without it, a caller
+    ///         could replay a valid attestation against a different swap
+    ///         (different tokens, different amounts, different
+    ///         pools), bypassing the off-chain checks the oracle ran.
     struct Attestation {
         address swapper;
         address recipient;
@@ -36,6 +41,7 @@ contract TrustSwapRouter {
         TrustTier recipientTier;
         uint256 expiresAt;
         uint256 nonce;
+        bytes32 calldataHash;
     }
 
     /// @notice Uniswap Universal Router on Base mainnet (chainId 8453).
@@ -76,6 +82,7 @@ contract TrustSwapRouter {
     error AttestationExpired(uint256 deadline, uint256 nowTs);
     error NonceAlreadyUsed(address swapper, uint256 nonce);
     error BadOracleSignature(address recovered);
+    error CalldataHashMismatch(bytes32 expected, bytes32 actual);
     error AmountExceedsCap(uint256 amount, uint256 cap);
     error UniversalRouterCallFailed(bytes returndata);
     error FeeTransferFailed();
@@ -108,7 +115,17 @@ contract TrustSwapRouter {
         address recovered = ECDSA.recover(signedHash, oracleSig);
         if (recovered != ORACLE_PUBKEY) revert BadOracleSignature(recovered);
 
-        // 2. Replay protection — every (swapper, nonce) pair is single-use.
+        // 2. Calldata binding — the oracle signed an attestation that
+        //    includes a hash of the EXACT calldata it expected the caller
+        //    to forward. If the calldata here doesn't match, the
+        //    attestation is being replayed against a different swap
+        //    (different tokens, amounts, pools, recipient overrides).
+        bytes32 actualCalldataHash = keccak256(universalRouterCalldata);
+        if (actualCalldataHash != att.calldataHash) {
+            revert CalldataHashMismatch(att.calldataHash, actualCalldataHash);
+        }
+
+        // 3. Replay protection — every (swapper, nonce) pair is single-use.
         if (usedNonce[att.swapper][att.nonce]) {
             revert NonceAlreadyUsed(att.swapper, att.nonce);
         }

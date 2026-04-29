@@ -19,8 +19,7 @@ export interface AttestRequest {
   /**
    * Swapper's ENS name. Optional in the wire type so the Phase 1 mock keeps
    * working, but the real HTTP oracle (Phase 2+) requires it and uses it to
-   * re-resolve the swapper's TrustProfile via TRL. Wave 4 (TRU-58) threads
-   * this through `orchestrate` from the CLI's `--caller-ens` flag.
+   * re-resolve the swapper's TrustProfile via TRL.
    */
   swapperEns?: string;
   /** Recipient's ENS name; same conditional-requirement as `swapperEns`. */
@@ -34,6 +33,19 @@ export interface AttestRequest {
   tokenOut: Address;
   /** Decimal-string amount in the token's base units (e.g. "1000000" = 1 USDC). */
   amountIn: string;
+  /**
+   * Decimal-string expected output amount in `tokenOut` base units. Used
+   * by the oracle's reverse-direction RiskPolicy check to enforce the
+   * swapper's `maxAcceptedSize` against the token they receive.
+   */
+  amountOut?: string;
+  /**
+   * `keccak256(universalRouterCalldata)`. The oracle binds this hash into
+   * the signed attestation; the on-chain router refuses to forward calldata
+   * that hashes to anything else. Without this binding, a valid attestation
+   * could be replayed against a different swap shape.
+   */
+  calldataHash?: Hex;
 }
 
 /** The canonical attestation tuple — encoded with `abi.encode(att)` on chain. */
@@ -46,6 +58,12 @@ export interface Attestation {
   expiresAt: number;
   /** Per-swapper nonce; the router rejects re-broadcasts of the same nonce. */
   nonce: number;
+  /**
+   * `keccak256(universalRouterCalldata)`. Binds the attestation to the
+   * specific swap shape the oracle saw — different calldata means a
+   * different swap, which the contract refuses to forward.
+   */
+  calldataHash: Hex;
 }
 
 export interface AttestResponse {

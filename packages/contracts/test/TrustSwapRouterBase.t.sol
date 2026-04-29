@@ -63,6 +63,22 @@ abstract contract TrustSwapRouterBaseTest is Test {
         TrustSwapRouter.TrustTier recipientTier,
         uint256 nonce
     ) internal view returns (TrustSwapRouter.Attestation memory) {
+        return _buildAttestationWithCalldata(
+            swapperTier,
+            recipientTier,
+            nonce,
+            forwardedCalldata
+        );
+    }
+
+    /// Variant for tests that forward a non-default calldata payload —
+    /// the calldataHash in the attestation must match exactly.
+    function _buildAttestationWithCalldata(
+        TrustSwapRouter.TrustTier swapperTier,
+        TrustSwapRouter.TrustTier recipientTier,
+        uint256 nonce,
+        bytes memory forwarded
+    ) internal view returns (TrustSwapRouter.Attestation memory) {
         return
             TrustSwapRouter.Attestation({
                 swapper: swapper,
@@ -70,7 +86,8 @@ abstract contract TrustSwapRouterBaseTest is Test {
                 swapperTier: swapperTier,
                 recipientTier: recipientTier,
                 expiresAt: block.timestamp + 5 minutes,
-                nonce: nonce
+                nonce: nonce,
+                calldataHash: keccak256(forwarded)
             });
     }
 
