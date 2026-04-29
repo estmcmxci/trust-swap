@@ -1,0 +1,19 @@
+{
+  "chain": "base",
+  "chainId": 8453,
+  "address": "0x3AEFfbAA88186E557eADdCf6bb57C536f3e40925",
+  "deployer": "0x287B2526e78720bA5A4C0198422aa5907a83fa4F",
+  "deployTxHash": "0x775f8b8aa75bd1ab66492aadef11fefb8299f6eaf70af4c7821d7bfed185a243",
+  "deployBlock": 45345689,
+  "create2Salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "constructor": {
+    "oraclePubkey": "0xB70d715b7ec382789c17834E8c5EA78548885106",
+    "feeRecipient": "0xB70d715b7ec382789c17834E8c5EA78548885106"
+  },
+  "wraps": {
+    "universalRouter": "0x6fF5693b99212Da76ad316178A184AB56D299b43"
+  },
+  "deployedAt": "2026-04-29T16:41:00Z",
+  "verifiedOnBaseScan": false,
+  "basescan": "https://basescan.org/address/0x3AEFfbAA88186E557eADdCf6bb57C536f3e40925"
+}

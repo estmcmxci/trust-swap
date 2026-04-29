@@ -14,6 +14,9 @@ importers:
       '@zerodev/multi-chain-ecdsa-validator':
         specifier: ^5.4.5
         version: 5.4.5(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
+      '@zerodev/permissions':
+        specifier: ^5.6.3
+        version: 5.6.3(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       '@zerodev/sdk':
         specifier: ^5.5.8
         version: 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
@@ -26,12 +29,21 @@ importers:
 
   packages/cli:
     dependencies:
+      '@namera-ai/sdk':
+        specifier: ^0.1.0
+        version: 0.1.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       '@synthesis/resolver':
         specifier: file:../../../synthesis/packages/resolver
-        version: file:../synthesis/packages/resolver(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(ethers@6.16.0)(typescript@5.9.3)
+        version: file:../synthesis/packages/resolver(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(ethers@6.16.0)(typescript@5.9.3)
       '@trust-swap/core':
         specifier: workspace:*
         version: link:../core
+      '@zerodev/permissions':
+        specifier: ^5.6.3
+        version: 5.6.3(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
+      '@zerodev/sdk':
+        specifier: ^5.5.8
+        version: 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       dotenv:
         specifier: ^17.3.1
         version: 17.4.2
@@ -40,7 +52,7 @@ importers:
         version: 0.3.25
       viem:
         specifier: ^2.33.3
-        version: 2.48.4(typescript@5.9.3)(zod@3.25.76)
+        version: 2.48.4(typescript@5.9.3)(zod@4.3.6)
       yoctocolors:
         specifier: ^2.1.1
         version: 2.1.2
@@ -68,9 +80,6 @@ importers:
       '@synthesis/resolver':
         specifier: file:../../../synthesis/packages/resolver
         version: file:../synthesis/packages/resolver(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(ethers@6.16.0)(typescript@5.9.3)
-      '@trust-swap/oracle':
-        specifier: workspace:*
-        version: link:../oracle
       viem:
         specifier: ^2.33.3
         version: 2.48.4(typescript@5.9.3)(zod@3.25.76)
@@ -118,12 +127,21 @@ importers:
 
   packages/oracle:
     dependencies:
+      '@synthesis/resolver':
+        specifier: file:../../../synthesis/packages/resolver
+        version: file:../synthesis/packages/resolver(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(ethers@6.16.0)(typescript@5.9.3)
+      '@trust-swap/core':
+        specifier: workspace:*
+        version: link:../core
       hono:
         specifier: ^4.6.0
         version: 4.12.15
       viem:
         specifier: ^2.33.3
-        version: 2.48.4(typescript@5.9.3)(zod@4.3.6)
+        version: 2.48.4(typescript@5.9.3)(zod@3.25.76)
+      zod:
+        specifier: ^3.24.2
+        version: 3.25.76
     devDependencies:
       '@biomejs/biome':
         specifier: ^1.9.4
@@ -2050,12 +2068,12 @@ snapshots:
 
   '@namera-ai/sdk@0.1.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
     dependencies:
-      '@zerodev/multi-chain-ecdsa-validator': 5.4.5(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
-      '@zerodev/passkey-validator': 5.6.0(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
-      '@zerodev/permissions': 5.6.3(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+      '@zerodev/multi-chain-ecdsa-validator': 5.4.5(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+      '@zerodev/passkey-validator': 5.6.0(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+      '@zerodev/permissions': 5.6.3(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       '@zerodev/webauthn-key': 5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
-      '@zerodev/weighted-validator': 5.5.1(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+      '@zerodev/weighted-validator': 5.5.1(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       viem: 2.48.4(typescript@5.9.3)(zod@3.25.76)
 
   '@namera-ai/sdk@0.1.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))':
@@ -2247,9 +2265,27 @@ snapshots:
     dependencies:
       '@namera-ai/sdk': 0.1.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       '@worldcoin/agentkit': 0.1.8(ethers@6.16.0)(typescript@5.9.3)
-      '@zerodev/permissions': 5.6.3(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+      '@zerodev/permissions': 5.6.3(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       permissionless: 0.3.5(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+      pinata: 1.10.1
+      viem: 2.48.4(typescript@5.9.3)(zod@3.25.76)
+      zod: 3.25.76
+    transitivePeerDependencies:
+      - '@zerodev/webauthn-key'
+      - bufferutil
+      - ethers
+      - ox
+      - typescript
+      - utf-8-validate
+
+  '@synthesis/resolver@file:../synthesis/packages/resolver(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(ethers@6.16.0)(typescript@5.9.3)':
+    dependencies:
+      '@namera-ai/sdk': 0.1.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
+      '@worldcoin/agentkit': 0.1.8(ethers@6.16.0)(typescript@5.9.3)
+      '@zerodev/permissions': 5.6.3(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
+      '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
+      permissionless: 0.3.5(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       pinata: 1.10.1
       viem: 2.48.4(typescript@5.9.3)(zod@3.25.76)
       zod: 3.25.76
@@ -2300,11 +2336,11 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  '@zerodev/multi-chain-ecdsa-validator@5.4.5(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
+  '@zerodev/multi-chain-ecdsa-validator@5.4.5(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
     dependencies:
       '@simplewebauthn/browser': 9.0.1
       '@simplewebauthn/typescript-types': 8.3.4
-      '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+      '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       '@zerodev/webauthn-key': 5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       merkletreejs: 0.3.11
       viem: 2.48.4(typescript@5.9.3)(zod@3.25.76)
@@ -2318,11 +2354,11 @@ snapshots:
       merkletreejs: 0.3.11
       viem: 2.48.4(typescript@5.9.3)(zod@4.3.6)
 
-  '@zerodev/passkey-validator@5.6.0(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
+  '@zerodev/passkey-validator@5.6.0(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
     dependencies:
       '@noble/curves': 1.9.7
       '@simplewebauthn/browser': 8.3.7
-      '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+      '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       '@zerodev/webauthn-key': 5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       viem: 2.48.4(typescript@5.9.3)(zod@3.25.76)
 
@@ -2334,10 +2370,10 @@ snapshots:
       '@zerodev/webauthn-key': 5.5.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       viem: 2.48.4(typescript@5.9.3)(zod@4.3.6)
 
-  '@zerodev/permissions@5.6.3(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
+  '@zerodev/permissions@5.6.3(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
     dependencies:
       '@simplewebauthn/browser': 9.0.1
-      '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+      '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       '@zerodev/webauthn-key': 5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       merkletreejs: 0.3.11
       viem: 2.48.4(typescript@5.9.3)(zod@3.25.76)
@@ -2374,11 +2410,11 @@ snapshots:
       '@simplewebauthn/types': 12.0.0
       viem: 2.48.4(typescript@5.9.3)(zod@4.3.6)
 
-  '@zerodev/weighted-validator@5.5.1(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
+  '@zerodev/weighted-validator@5.5.1(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)))(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))':
     dependencies:
       '@noble/curves': 1.9.7
       '@simplewebauthn/browser': 8.3.7
-      '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
+      '@zerodev/sdk': 5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       '@zerodev/webauthn-key': 5.5.0(viem@2.48.4(typescript@5.9.3)(zod@3.25.76))
       viem: 2.48.4(typescript@5.9.3)(zod@3.25.76)
 
@@ -2713,6 +2749,10 @@ snapshots:
   permissionless@0.3.5(viem@2.48.4(typescript@5.9.3)(zod@3.25.76)):
     dependencies:
       viem: 2.48.4(typescript@5.9.3)(zod@3.25.76)
+
+  permissionless@0.3.5(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)):
+    dependencies:
+      viem: 2.48.4(typescript@5.9.3)(zod@4.3.6)
 
   picocolors@1.1.1: {}
 

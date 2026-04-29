@@ -21,8 +21,11 @@
     "format": "biome format --write ."
   },
   "dependencies": {
+    "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
+    "@trust-swap/core": "workspace:*",
     "hono": "^4.6.0",
-    "viem": "^2.33.3"
+    "viem": "^2.33.3",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

@@ -1,6 +1,10 @@
 name = "trust-swap-oracle"
 main = "src/index.ts"
 compatibility_date = "2026-04-01"
+# `nodejs_compat` is required because `@synthesis/resolver`'s transitive deps
+# (merkletreejs, etc.) reach for Node's `buffer` module. CF Workers ships
+# the polyfill behind this flag.
+compatibility_flags = ["nodejs_compat"]
 
 # Phase 0 deployed a placeholder Worker at this name from infra/oracle/.
 # Phase 2 will run `pnpm --filter @trust-swap/oracle deploy` from this dir to

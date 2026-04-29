@@ -1,19 +1,21 @@
 import { encodeFunctionData, isAddress, type Address, type Hex } from "viem";
 import {
+  createEnsClient,
   gate,
   resolve,
+  resolveAddress,
   type GateDecision,
   type ResolveOptions,
   type Signer,
   type TrustPolicy,
   type TrustProfile,
 } from "@synthesis/resolver";
+import type { TrustTier } from "@synthesis/resolver";
 import type {
   AttestRequest,
   AttestResponse,
   Attestation,
-  TrustTier,
-} from "@trust-swap/oracle";
+} from "./attestation.js";
 import { defaultSwapPolicy, tierBucket } from "./policy.js";
 import { resolveRiskPolicy, type RiskPolicy } from "./risk-policy.js";
 import type {
@@ -272,7 +274,7 @@ export async function orchestrate(
   const routerAddress = opts.routerAddress ?? PLACEHOLDER_ROUTER_ADDRESS;
   const resolveTP = opts.resolveTrustProfile ?? resolve;
   const resolveRP = opts.resolveRiskPolicyFn ?? resolveRiskPolicy;
-  const dryRun = opts.dryRun ?? true; // Phase 1 default: never broadcast
+  const dryRun = opts.dryRun ?? false; // Phase 2 default: broadcast (router live)
 
   // Refuse to broadcast against the placeholder. Without this, a caller who
   // forgets to pass `routerAddress` while flipping `dryRun: false` would send
@@ -286,8 +288,16 @@ export async function orchestrate(
     );
   }
 
-  // 1. Resolve the recipient through TRL.
-  const recipientProfile = await resolveTP(opts.recipientEns, opts.resolveOptions);
+  // 1. Resolve the recipient through TRL. If the recipient is a subname
+  //    (3+ labels) and resolves tier=none, walk up one level and inherit
+  //    the parent's profile — same semantics as the oracle. Subname
+  //    creation is gated by parent ownership on ENS, so an existing
+  //    subname is implicit delegation from the parent.
+  const recipientProfile = await resolveWithSubnameInheritance(
+    opts.recipientEns,
+    opts.resolveOptions,
+    resolveTP,
+  );
 
   // 2. Fetch the recipient's RiskPolicy (may be null).
   const recipientRiskPolicy = await resolveRP(opts.recipientEns);
@@ -334,11 +344,15 @@ export async function orchestrate(
   }
 
   // 5. Request attestation from the oracle. Tier=none on either side or a
-  //    RiskPolicy mismatch turns into `OracleRefusalError`.
+  //    RiskPolicy mismatch turns into `OracleRefusalError`. The HTTP oracle
+  //    (Phase 2+) requires `swapperEns` + `recipientEns` so it can re-resolve
+  //    both sides via TRL; mock client ignores them.
   let attestation: Attestation;
   let attestationSignature: Hex;
   try {
     const result = await opts.oracleClient.attest({
+      swapperEns: opts.callerEns,
+      recipientEns: opts.recipientEns,
       swapper: opts.signer.address,
       recipient: recipientProfile.address as Address,
       tokenIn: opts.tokenIn,
@@ -480,6 +494,57 @@ export async function orchestrate(
 // Maps `gate()` deny reasons to actionable suggestions. Phase 3 (`tru policy
 // publish`) extends this with RiskPolicy-driven hints; this is the floor.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Subname tier inheritance
+//
+// Mirrors the oracle's `inheritTierFromParent` (packages/oracle/src/index.ts).
+// Replaces the ENS-name + address fields with the subname's, but inherits
+// every TRL-layer field from the parent — so `gate()` checks like
+// `requireLineage` and `requireSig` use the parent's verified manifest data
+// when they exist on the parent ENS.
+// ---------------------------------------------------------------------------
+
+async function resolveWithSubnameInheritance(
+  ensName: string,
+  resolveOptions: ResolveOptions | undefined,
+  resolveTP: (
+    ensName: string,
+    options?: ResolveOptions,
+  ) => Promise<TrustProfile>,
+): Promise<TrustProfile> {
+  const profile = await resolveTP(ensName, resolveOptions);
+  if (profile.trustScore !== "none") return profile;
+  const labels = ensName.split(".");
+  if (labels.length < 3) return profile;
+  const parent = ensName.slice(ensName.indexOf(".") + 1);
+  try {
+    const parentProfile = await resolveTP(parent, resolveOptions);
+    if (parentProfile.trustScore === "none") return profile;
+    // Synthesis's `resolve()` occasionally returns `address: null` for
+    // subnames even when the address record is set (intermittent ENS RPC
+    // flakiness across the parallel layer queries). Fall back to a
+    // single-purpose live ENS lookup — same data source, fewer parallel
+    // calls = fewer races. No hardcode; the address comes from whatever
+    // the ENS contract returns for `ensName` at request time.
+    let address = profile.address;
+    if (!address) {
+      try {
+        const client = createEnsClient(resolveOptions?.ensRpcUrl);
+        address = await resolveAddress(client, ensName);
+      } catch {
+        // swallow — keep original null
+      }
+    }
+    return {
+      ...parentProfile,
+      ensName,
+      address,
+    };
+  } catch {
+    return profile;
+  }
+}
 
 function onboardingHintFor(decision: GateDecision): string {
   const reason = decision.reason;
