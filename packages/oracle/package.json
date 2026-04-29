@@ -1,7 +1,8 @@
 {
-  "name": "@trust-swap/core",
+  "name": "@trust-swap/oracle",
   "version": "0.0.0",
-  "description": "TrustSwap core — gate-then-execute composition and Uniswap Trading API client",
+  "description": "TrustSwap Oracle — off-chain HTTP service that re-resolves both sides via TRL, checks RiskPolicies, and signs attestations the on-chain TrustSwapRouter verifies.",
+  "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -14,22 +15,21 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --outDir dist",
-    "dev": "tsx src/index.ts",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
     "lint": "biome lint --write .",
     "format": "biome format --write ."
   },
   "dependencies": {
-    "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
-    "@trust-swap/oracle": "workspace:*",
-    "viem": "^2.33.3",
-    "zod": "^3.24.2"
+    "hono": "^4.6.0",
+    "viem": "^2.33.3"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
-    "@types/node": "^22.19.15",
+    "@cloudflare/workers-types": "^4.20240909.0",
     "tsup": "^8.5.1",
-    "tsx": "^4.20.6",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "wrangler": "^4.46.0"
   },
   "license": "MIT"
 }

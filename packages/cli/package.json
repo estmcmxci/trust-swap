@@ -14,7 +14,12 @@
     "format": "biome format --write ."
   },
   "dependencies": {
-    "@trust-swap/core": "workspace:*"
+    "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
+    "@trust-swap/core": "workspace:*",
+    "dotenv": "^17.3.1",
+    "incur": "^0.3.5",
+    "viem": "^2.33.3",
+    "yoctocolors": "^2.1.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

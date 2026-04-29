@@ -1,0 +1,13 @@
+{
+  "name": "@trust-swap/contracts",
+  "version": "0.0.0",
+  "description": "TrustSwap Solidity contracts — TrustSwapRouter wraps Uniswap's Universal Router with reputation-graded settlement (Phase 2).",
+  "private": true,
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "fmt": "forge fmt",
+    "clean": "forge clean"
+  },
+  "license": "MIT"
+}

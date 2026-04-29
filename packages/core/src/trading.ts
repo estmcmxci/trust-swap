@@ -1,0 +1,527 @@
+import { isAddress, isHex, type Address, type Hex } from "viem";
+
+// ---------------------------------------------------------------------------
+// Public API surface
+//
+// `createTradingClient(opts)` returns a typed wrapper around the Uniswap
+// Trading API at https://trade-api.gateway.uniswap.org/v1. The client does no
+// signing — it produces a `SwapTransaction` ready for `signer.execute(...)`
+// to consume. Phase 2 wraps this output as the `universalRouterCalldata`
+// argument to `TrustSwapRouter.gatedSwap()`.
+// ---------------------------------------------------------------------------
+
+export interface TradingClientOptions {
+  apiKey: string;
+  /** Override the base URL. Defaults to the production gateway. */
+  baseUrl?: string;
+  /** Optional fetch override (for testing). Defaults to global fetch. */
+  fetchImpl?: typeof fetch;
+}
+
+const DEFAULT_BASE_URL = "https://trade-api.gateway.uniswap.org/v1";
+const UR_VERSION_HEADER = "x-universal-router-version";
+const UR_VERSION = "2.0";
+
+// ---------------------------------------------------------------------------
+// Inputs
+// ---------------------------------------------------------------------------
+
+export interface CheckApprovalInput {
+  walletAddress: Address;
+  token: Address;
+  amount: bigint | string;
+  chainId: number;
+}
+
+export type QuoteType = "EXACT_INPUT" | "EXACT_OUTPUT";
+
+export type RoutingPreference = "BEST_PRICE" | "FASTEST";
+
+export type Protocol = "V2" | "V3" | "V4" | "UNISWAPX_V2" | "UNISWAPX_V3";
+
+export interface QuoteInput {
+  swapper: Address;
+  tokenIn: Address;
+  tokenOut: Address;
+  tokenInChainId: number;
+  tokenOutChainId: number;
+  amount: bigint | string;
+  type?: QuoteType;
+  /** Slippage as a percentage, 0–100. Default 0.5 (50 bps). */
+  slippageTolerance?: number;
+  routingPreference?: RoutingPreference;
+  protocols?: Protocol[];
+  recipient?: Address;
+  deadline?: number;
+  /** When true, the API auto-calculates slippage and overrides `slippageTolerance`. */
+  autoSlippage?: boolean;
+}
+
+export interface SwapInput {
+  /** Pass the full quote response — the client spreads it correctly. */
+  quote: QuoteResponse;
+  /** Permit2 signature (CLASSIC) or order signature (UniswapX). */
+  signature?: Hex;
+}
+
+export interface SwapStatusInput {
+  /** For CLASSIC: pass `txHash`. For UniswapX: pass `orderHash`. */
+  txHash?: Hex;
+  orderHash?: Hex;
+  chainId: number;
+}
+
+export interface SwappableTokensInput {
+  chainId: number;
+}
+
+// ---------------------------------------------------------------------------
+// Outputs
+// ---------------------------------------------------------------------------
+
+export type Routing =
+  | "CLASSIC"
+  | "DUTCH_V2"
+  | "DUTCH_V3"
+  | "PRIORITY"
+  | "WRAP"
+  | "UNWRAP"
+  | "BRIDGE"
+  | "QUICKROUTE"
+  | "DUTCH_LIMIT"
+  | "LIMIT_ORDER";
+
+export interface Approval {
+  to: Address;
+  from: Address;
+  data: Hex;
+  value: string;
+  chainId: number;
+}
+
+export interface CheckApprovalResponse {
+  approval: Approval | null;
+}
+
+export interface ClassicQuote {
+  routing: "CLASSIC" | "WRAP" | "UNWRAP";
+  quote: {
+    input: { token: Address; amount: string };
+    output: { token: Address; amount: string };
+    slippage: number;
+    gasFee: string;
+    gasFeeUSD: string;
+    gasUseEstimate: string;
+    route: unknown[];
+  };
+  permitData: Record<string, unknown> | null;
+  permitTransaction?: Record<string, unknown> | null;
+}
+
+export interface DutchOrderOutput {
+  token: Address;
+  startAmount: string;
+  endAmount: string;
+  recipient: Address;
+}
+
+export interface UniswapXQuote {
+  routing: "DUTCH_V2" | "DUTCH_V3" | "PRIORITY";
+  quote: {
+    orderInfo: {
+      input: { token: Address; startAmount: string; endAmount: string };
+      outputs: DutchOrderOutput[];
+      deadline: number;
+      nonce: string;
+      reactor?: Address;
+      swapper?: Address;
+      cosigner?: Address;
+      chainId?: number;
+    };
+    encodedOrder: Hex;
+    orderHash: Hex;
+  };
+  permitData: Record<string, unknown> | null;
+  permitTransaction?: Record<string, unknown> | null;
+}
+
+export type QuoteResponse = ClassicQuote | UniswapXQuote;
+
+export interface SwapTransaction {
+  to: Address;
+  from: Address;
+  data: Hex;
+  value: string;
+  chainId: number;
+  gasLimit?: string;
+}
+
+export interface SwapResponse {
+  swap: SwapTransaction;
+}
+
+export interface SwapStatusResponse {
+  /** "FILLED" | "EXPIRED" | "ERROR" | "OPEN" | "INSUFFICIENT_FUNDS" | "PENDING" | "SUCCESS" */
+  swapStatus: string;
+  txHash?: Hex;
+  orderHash?: Hex;
+  fillBlock?: number;
+}
+
+export interface TokenInfo {
+  address: Address;
+  symbol: string;
+  name: string;
+  decimals: number;
+  chainId: number;
+  logoURI?: string;
+}
+
+export interface SwappableTokensResponse {
+  tokens: TokenInfo[];
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+export class TradingApiError extends Error {
+  readonly status: number;
+  readonly errorCode?: string;
+  readonly detail?: string;
+  readonly body?: unknown;
+  constructor(opts: {
+    message: string;
+    status: number;
+    errorCode?: string;
+    detail?: string;
+    body?: unknown;
+  }) {
+    super(opts.message);
+    this.name = "TradingApiError";
+    this.status = opts.status;
+    this.errorCode = opts.errorCode;
+    this.detail = opts.detail;
+    this.body = opts.body;
+  }
+}
+
+export class QuoteExpiredError extends TradingApiError {
+  constructor(opts: ConstructorParameters<typeof TradingApiError>[0]) {
+    super(opts);
+    this.name = "QuoteExpiredError";
+  }
+}
+export class SlippageExceededError extends TradingApiError {
+  constructor(opts: ConstructorParameters<typeof TradingApiError>[0]) {
+    super(opts);
+    this.name = "SlippageExceededError";
+  }
+}
+export class InsufficientLiquidityError extends TradingApiError {
+  constructor(opts: ConstructorParameters<typeof TradingApiError>[0]) {
+    super(opts);
+    this.name = "InsufficientLiquidityError";
+  }
+}
+export class RateLimitedError extends TradingApiError {
+  constructor(opts: ConstructorParameters<typeof TradingApiError>[0]) {
+    super(opts);
+    this.name = "RateLimitedError";
+  }
+}
+export class InvalidResponseError extends TradingApiError {
+  constructor(opts: ConstructorParameters<typeof TradingApiError>[0]) {
+    super(opts);
+    this.name = "InvalidResponseError";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
+export interface TradingClient {
+  checkApproval(input: CheckApprovalInput): Promise<CheckApprovalResponse>;
+  quote(input: QuoteInput): Promise<QuoteResponse>;
+  swap(input: SwapInput): Promise<SwapResponse>;
+  swapStatus(input: SwapStatusInput): Promise<SwapStatusResponse>;
+  swappableTokens(input: SwappableTokensInput): Promise<SwappableTokensResponse>;
+}
+
+export function createTradingClient(opts: TradingClientOptions): TradingClient {
+  if (!opts.apiKey) {
+    throw new Error("createTradingClient: apiKey is required");
+  }
+  const baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+  const fetchImpl = opts.fetchImpl ?? fetch;
+
+  const baseHeaders = {
+    "content-type": "application/json",
+    "x-api-key": opts.apiKey,
+    [UR_VERSION_HEADER]: UR_VERSION,
+  } as const;
+
+  async function request<T>(
+    method: "GET" | "POST",
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
+    const url = `${baseUrl}${path}`;
+    const init: RequestInit = {
+      method,
+      headers: baseHeaders,
+    };
+    if (body !== undefined) init.body = JSON.stringify(body);
+
+    const res = await fetchImpl(url, init);
+    const text = await res.text();
+    let parsed: unknown;
+    try {
+      parsed = text.length > 0 ? JSON.parse(text) : undefined;
+    } catch {
+      throw new InvalidResponseError({
+        message: `Trading API returned non-JSON: ${text.slice(0, 200)}`,
+        status: res.status,
+        body: text,
+      });
+    }
+
+    if (!res.ok) throw mapHttpError(res.status, parsed);
+    return parsed as T;
+  }
+
+  return {
+    async checkApproval(input) {
+      assertAddress("walletAddress", input.walletAddress);
+      assertAddress("token", input.token);
+      const body = {
+        walletAddress: input.walletAddress,
+        token: input.token,
+        amount: input.amount.toString(),
+        chainId: input.chainId,
+      };
+      return request<CheckApprovalResponse>("POST", "/check_approval", body);
+    },
+
+    async quote(input) {
+      assertAddress("swapper", input.swapper);
+      assertAddress("tokenIn", input.tokenIn);
+      assertAddress("tokenOut", input.tokenOut);
+      const body: Record<string, unknown> = {
+        swapper: input.swapper,
+        tokenIn: input.tokenIn,
+        tokenOut: input.tokenOut,
+        // Trading API requires chain IDs as strings on /quote.
+        tokenInChainId: String(input.tokenInChainId),
+        tokenOutChainId: String(input.tokenOutChainId),
+        amount: input.amount.toString(),
+        type: input.type ?? "EXACT_INPUT",
+        slippageTolerance: input.slippageTolerance ?? 0.5,
+        routingPreference: input.routingPreference ?? "BEST_PRICE",
+      };
+      if (input.protocols) body.protocols = input.protocols;
+      if (input.recipient) {
+        assertAddress("recipient", input.recipient);
+        body.recipient = input.recipient;
+      }
+      if (input.deadline !== undefined) body.deadline = input.deadline;
+      if (input.autoSlippage !== undefined) body.autoSlippage = input.autoSlippage;
+
+      const res = await request<QuoteResponse>("POST", "/quote", body);
+      validateQuoteResponse(res);
+      return res;
+    },
+
+    async swap(input) {
+      const body = prepareSwapRequest(input.quote, input.signature);
+      const res = await request<SwapResponse>("POST", "/swap", body);
+      validateSwapResponse(res);
+      return res;
+    },
+
+    async swapStatus(input) {
+      if (!input.txHash && !input.orderHash) {
+        throw new Error("swapStatus: pass either txHash or orderHash");
+      }
+      const params = new URLSearchParams();
+      if (input.txHash) params.set("txHash", input.txHash);
+      if (input.orderHash) params.set("orderHash", input.orderHash);
+      params.set("chainId", String(input.chainId));
+      return request<SwapStatusResponse>(
+        "GET",
+        `/swaps/status?${params.toString()}`,
+      );
+    },
+
+    async swappableTokens(input) {
+      const params = new URLSearchParams();
+      params.set("chainId", String(input.chainId));
+      return request<SwappableTokensResponse>(
+        "GET",
+        `/swappable_tokens?${params.toString()}`,
+      );
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the `/swap` request body. The Trading API expects the quote response
+ * spread directly into the body (not wrapped). Strip `permitData` and
+ * `permitTransaction` from the spread, then re-add `permitData` only for
+ * CLASSIC routes when a Permit2 signature is supplied. UniswapX routes
+ * (DUTCH_V2/V3/PRIORITY) reject `permitData` in the body — the order is
+ * already encoded in `quote.encodedOrder`.
+ */
+export function prepareSwapRequest(
+  quoteResponse: QuoteResponse,
+  signature?: Hex,
+): Record<string, unknown> {
+  const { permitData, permitTransaction, ...cleanQuote } =
+    quoteResponse as Record<string, unknown> & QuoteResponse;
+  void permitTransaction;
+  const request: Record<string, unknown> = { ...cleanQuote };
+
+  if (isUniswapXQuote(quoteResponse)) {
+    if (signature) request.signature = signature;
+    return request;
+  }
+
+  // CLASSIC: signature + permitData together, or neither.
+  if (signature && permitData && typeof permitData === "object") {
+    request.signature = signature;
+    request.permitData = permitData;
+  }
+  return request;
+}
+
+export function isUniswapXQuote(q: QuoteResponse): q is UniswapXQuote {
+  return (
+    q.routing === "DUTCH_V2" ||
+    q.routing === "DUTCH_V3" ||
+    q.routing === "PRIORITY"
+  );
+}
+
+/**
+ * Read the user-facing output amount from a quote, regardless of routing.
+ * For UniswapX, returns the auction `startAmount` (best-case fill) — callers
+ * that care about worst-case should read `endAmount` themselves.
+ */
+export function getOutputAmount(q: QuoteResponse): string {
+  if (isUniswapXQuote(q)) {
+    const out = q.quote.orderInfo.outputs[0];
+    if (!out) {
+      throw new InvalidResponseError({
+        message: "UniswapX quote has no outputs",
+        status: 200,
+        body: q,
+      });
+    }
+    return out.startAmount;
+  }
+  return q.quote.output.amount;
+}
+
+function validateQuoteResponse(q: QuoteResponse): void {
+  if (!q || typeof q !== "object" || !("routing" in q)) {
+    throw new InvalidResponseError({
+      message: "quote response missing `routing` field",
+      status: 200,
+      body: q,
+    });
+  }
+  if (isUniswapXQuote(q)) {
+    if (!isHex(q.quote.encodedOrder) || !isHex(q.quote.orderHash)) {
+      throw new InvalidResponseError({
+        message: "UniswapX quote missing encodedOrder or orderHash",
+        status: 200,
+        body: q,
+      });
+    }
+  } else {
+    const out = q.quote?.output?.amount;
+    if (typeof out !== "string" || out.length === 0) {
+      throw new InvalidResponseError({
+        message: "CLASSIC quote missing quote.output.amount",
+        status: 200,
+        body: q,
+      });
+    }
+  }
+}
+
+function validateSwapResponse(res: SwapResponse): void {
+  const swap = res?.swap;
+  if (!swap) {
+    throw new InvalidResponseError({
+      message: "swap response missing `swap` field",
+      status: 200,
+      body: res,
+    });
+  }
+  if (!swap.data || swap.data === "0x" || !isHex(swap.data)) {
+    throw new QuoteExpiredError({
+      message: "swap.data empty — quote likely expired, re-fetch /quote",
+      status: 200,
+      body: res,
+    });
+  }
+  if (!isAddress(swap.to) || !isAddress(swap.from)) {
+    throw new InvalidResponseError({
+      message: "swap response contains invalid address",
+      status: 200,
+      body: res,
+    });
+  }
+  if (swap.value === undefined || swap.value === null) {
+    throw new InvalidResponseError({
+      message: "swap response missing `value` field",
+      status: 200,
+      body: res,
+    });
+  }
+}
+
+function mapHttpError(status: number, body: unknown): TradingApiError {
+  const detail = pluckString(body, "detail") ?? pluckString(body, "message");
+  const errorCode = pluckString(body, "errorCode");
+  const message = `Trading API ${status}${errorCode ? ` ${errorCode}` : ""}${
+    detail ? `: ${detail}` : ""
+  }`;
+  const opts = { message, status, errorCode, detail, body };
+
+  if (status === 429) return new RateLimitedError(opts);
+
+  // 400 with documented Uniswap errorCode strings — best-effort pattern match.
+  const e = (errorCode ?? "").toLowerCase();
+  const d = (detail ?? "").toLowerCase();
+  if (e.includes("quoteexpired") || d.includes("quote expired")) {
+    return new QuoteExpiredError(opts);
+  }
+  if (e.includes("slippage") || d.includes("slippage")) {
+    return new SlippageExceededError(opts);
+  }
+  if (e.includes("insufficientliquidity") || d.includes("insufficient liquidity")) {
+    return new InsufficientLiquidityError(opts);
+  }
+  return new TradingApiError(opts);
+}
+
+function pluckString(body: unknown, key: string): string | undefined {
+  if (typeof body === "object" && body !== null && key in body) {
+    const v = (body as Record<string, unknown>)[key];
+    if (typeof v === "string") return v;
+  }
+  return undefined;
+}
+
+function assertAddress(field: string, value: string): void {
+  if (!isAddress(value)) {
+    throw new Error(`${field} is not a valid 0x address: ${value}`);
+  }
+}
