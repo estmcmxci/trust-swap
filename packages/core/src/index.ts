@@ -1,9 +1,10 @@
 /**
- * @trust-swap/core — Phase −1.B scaffold
+ * @trust-swap/core
  *
- * Smoke-import test for the @synthesis/resolver file: dep wiring. The real
- * exports (Trading API client, defaultSwapPolicy, orchestrate function)
- * land in Phase 1 per ../PLAN.md.
+ * Composes the synthesis Trust Resolution Layer (TRL) substrate against
+ * Uniswap's Trading API and the on-chain TrustSwapRouter. Re-exports the
+ * upstream primitives we depend on so consumers don't have to import from
+ * `@synthesis/resolver` directly.
  */
 
 import {
@@ -12,18 +13,92 @@ import {
   type Signer,
   type TrustPolicy,
   type TrustProfile,
+  TrustTier,
 } from "@synthesis/resolver";
 
-// Re-export the TRL primitives this app composes against, so downstream
-// packages can `import { gate, ... } from "@trust-swap/core"` without
-// reaching into @synthesis/resolver directly.
 export {
   gate,
   type GateDecision,
   type Signer,
   type TrustPolicy,
   type TrustProfile,
+  TrustTier,
 };
 
-/** Phase −1.B sentinel — confirms the package builds and re-exports work. */
-export const SCAFFOLD_VERSION = "0.0.0-scaffold" as const;
+export {
+  defaultSwapPolicy,
+  tierBucket,
+  parsePolicyOverrides,
+} from "./policy.js";
+
+export {
+  RiskPolicySchema,
+  RiskPolicyError,
+  parseRiskPolicy,
+  resolveRiskPolicy,
+  type RiskPolicy,
+  type ResolveRiskPolicyOptions,
+} from "./risk-policy.js";
+
+export {
+  orchestrate,
+  buildGatedSwapCalldata,
+  createMockOracleClient,
+  createHttpOracleClient,
+  OracleRefusalError,
+  PLACEHOLDER_ROUTER_ADDRESS,
+  type OracleClient,
+  type CreateMockOracleClientOptions,
+  type CreateHttpOracleClientOptions,
+  type OrchestrateOptions,
+  type OrchestrateResult,
+  type ClampApplied,
+  type HaltReason,
+} from "./orchestrate.js";
+
+// Re-export attestation types so consumers don't need a direct dep on @trust-swap/oracle.
+export type {
+  AttestRequest,
+  AttestResponse,
+  AttestErrorResponse,
+  Attestation,
+} from "@trust-swap/oracle";
+
+export {
+  createTradingClient,
+  prepareSwapRequest,
+  isUniswapXQuote,
+  getOutputAmount,
+  TradingApiError,
+  QuoteExpiredError,
+  SlippageExceededError,
+  InsufficientLiquidityError,
+  RateLimitedError,
+  InvalidResponseError,
+  type TradingClient,
+  type TradingClientOptions,
+  type CheckApprovalInput,
+  type CheckApprovalResponse,
+  type Approval,
+  type QuoteInput,
+  type QuoteResponse,
+  type ClassicQuote,
+  type UniswapXQuote,
+  type DutchOrderOutput,
+  type SwapInput,
+  type SwapResponse,
+  type SwapTransaction,
+  type SwapStatusInput,
+  type SwapStatusResponse,
+  type SwapEntry,
+  type OrderStatusInput,
+  type OrderStatusResponse,
+  type OrderEntry,
+  type SwappableTokensInput,
+  type SwappableTokensResponse,
+  type TokenInfo,
+  type Routing,
+  type RoutingPreference,
+  type Protocol,
+  type QuoteType,
+} from "./trading.js";

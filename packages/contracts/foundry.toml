@@ -1,0 +1,18 @@
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+script = "script"
+libs = ["lib"]
+solc_version = "0.8.28"
+optimizer = true
+optimizer_runs = 10_000
+via_ir = false
+fs_permissions = [{ access = "read", path = "./" }]
+
+[fmt]
+line_length = 100
+tab_width = 4
+bracket_spacing = false
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md

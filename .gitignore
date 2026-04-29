@@ -7,9 +7,11 @@ dist
 .env
 .env.local
 .env.*.local
+*.local.md
 .DS_Store
 .vscode
 .idea
 *.swp
 *.swo
 .synthesis
+.wrangler

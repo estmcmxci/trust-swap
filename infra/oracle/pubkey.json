@@ -1,0 +1,7 @@
+{
+  "address": "0xB70d715b7ec382789c17834E8c5EA78548885106",
+  "publicKey": "0x0480246bbd632d944433c55c1ce7e55592e24b024ea858497f2ae1147ad6cc4a4d30f8dcda59877e4f48acbc33dea7a3cba267a3b6322380c2b509be2de7df4c68",
+  "createdAt": "2026-04-29T01:45:34.273Z",
+  "purpose": "TrustSwapRouter oracle signing key — passed to constructor at Phase 2 deploy",
+  "privateKey": "encrypted at ~/.trust-swap/oracle.key (scrypt + aes-256-ctr, mode 0600)"
+}

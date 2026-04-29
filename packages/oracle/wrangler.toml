@@ -1,0 +1,9 @@
+name = "trust-swap-oracle"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+
+# Phase 0 deployed a placeholder Worker at this name from infra/oracle/.
+# Phase 2 will run `pnpm --filter @trust-swap/oracle deploy` from this dir to
+# replace the placeholder with the real handler. Secrets (ORACLE_PRIVATE_KEY,
+# ORACLE_PUBKEY_ADDRESS) are already attached to the Worker via `wrangler
+# secret put` and persist across deploys.
