@@ -491,6 +491,81 @@ export function getOutputAmount(q: QuoteResponse): string {
   return q.quote.output.amount;
 }
 
+// ---------------------------------------------------------------------------
+// USD valuation
+//
+// `RiskPolicy.maxAcceptedSize` is denominated in 6-decimal USDC base units
+// (i.e. USD × 10^6). Comparing it directly against `amount` in the swap
+// token's native base units only lines up when the swap involves USDC; for
+// any other tokenIn the comparison is meaningless. `valueInUsdc` converts a
+// (token, amount, chainId) triple into USDC base units via a Trading API
+// quote, returning the amount unchanged when the token already IS USDC.
+// ---------------------------------------------------------------------------
+
+/** USDC contract address per chain. Extend as we expand chain support. */
+export const USDC_BY_CHAIN: Record<number, Address> = {
+  // Base mainnet
+  8453: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+  // Ethereum mainnet
+  1: "0xA0b86991c6218b36C1D19D4a2e9Eb0cE3606eB48",
+};
+
+export function getUsdcAddress(chainId: number): Address {
+  const addr = USDC_BY_CHAIN[chainId];
+  if (!addr) {
+    throw new Error(
+      `valueInUsdc: no USDC address registered for chainId ${chainId} — extend USDC_BY_CHAIN`,
+    );
+  }
+  return addr;
+}
+
+export interface ValueInUsdcArgs {
+  /** Caller's address — Trading API requires `swapper` even for valuation quotes. */
+  swapper: Address;
+  /** Token to value. */
+  token: Address;
+  /** Amount of `token` in its native base units. */
+  amount: bigint;
+  /** Chain on which both `token` and USDC live. */
+  chainId: number;
+}
+
+/**
+ * Convert a (token, amount, chainId) triple into USDC 6-decimal base units.
+ *
+ * - When `token === USDC[chainId]`: returns `amount` directly (no API call).
+ * - Otherwise: fetches a `token → USDC` quote and returns `quote.output.amount`.
+ *
+ * Used by orchestrate.ts and the oracle Worker to USD-normalize amounts
+ * before the `RiskPolicy.maxAcceptedSize` comparison.
+ *
+ * NB: a UniswapX quote has no `quote.output.amount` field, so we force
+ * `routingPreference: "BEST_PRICE"` and (implicitly via API default) get a
+ * CLASSIC route for the valuation call. If the API returns UniswapX
+ * regardless, we fall back to `getOutputAmount` which handles both shapes.
+ */
+export async function valueInUsdc(
+  client: TradingClient,
+  args: ValueInUsdcArgs,
+): Promise<bigint> {
+  const usdc = getUsdcAddress(args.chainId);
+  if (args.token.toLowerCase() === usdc.toLowerCase()) {
+    return args.amount;
+  }
+  if (args.amount === 0n) return 0n;
+  const quote = await client.quote({
+    swapper: args.swapper,
+    tokenIn: args.token,
+    tokenOut: usdc,
+    tokenInChainId: args.chainId,
+    tokenOutChainId: args.chainId,
+    amount: args.amount,
+    type: "EXACT_INPUT",
+  });
+  return BigInt(getOutputAmount(quote));
+}
+
 function validateQuoteResponse(q: QuoteResponse): void {
   if (!q || typeof q !== "object" || !("routing" in q)) {
     throw new InvalidResponseError({

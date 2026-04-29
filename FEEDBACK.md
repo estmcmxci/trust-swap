@@ -424,15 +424,25 @@ records, not just unit-tested with mocks.
 
 Our RiskPolicy `maxAcceptedSize` is denominated in 6-decimal USDC base
 units (matches the off-chain tier-bucket table). The oracle and
-orchestrator compare it directly against `amountIn` / `amountOut`, which
-are in the *swap token's* native base units. They line up when the swap
-involves USDC and diverge wildly otherwise (1 WETH = 10^18 base units
-gets compared against 100_000_000 = $100). Fix is structural — any
-policy layer that wants to express USD caps needs the Trading API to
-return a USD-equivalent on both sides of the quote, or every consumer
-re-fetches a `tokenIn → USDC` quote to convert. Tracked locally as
-TRU-77; flagging here because **this is exactly the kind of concern an
-attestation-aware Trading API would smooth over.**
+orchestrator originally compared it directly against `amountIn` /
+`amountOut`, which are in the *swap token's* native base units. They
+line up when the swap involves USDC and diverge wildly otherwise (1 WETH
+= 10^18 base units gets compared against 100_000_000 = $100).
+
+**Resolved (TRU-77)**: both orchestrate and the oracle now USD-normalize
+the inbound amount via a `tokenIn → USDC` Trading API quote before the
+size check. Skips the API call when the token already IS USDC. The
+oracle Worker requires a `UNISWAP_API_KEY` wrangler secret for this; if
+unset, the size check is skipped (logged) and tier/token enforcement
+still binds. Documented in `tru policy publish --max-size` help text and
+covered by `orchestrate.test.ts` non-USDC fixtures.
+
+The structural concern that motivated this still stands: **any policy
+layer expressing USD caps over a multi-token surface needs an
+authoritative USD-equivalent on every quote, or every consumer redoes
+the work.** This is exactly the kind of concern an attestation-aware
+Trading API would smooth over by returning `inputUsd` / `outputUsd`
+fields alongside `gasFeeUSD`.
 
 ---
 

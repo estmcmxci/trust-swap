@@ -92,19 +92,43 @@ function makeSigner(): Signer {
   };
 }
 
-function makeTradingClient(): { client: TradingClient; quoteCalls: number; swapCalls: number } {
+interface TradingClientOptions {
+  /**
+   * USD value (in USDC base units, 6-dec) returned for `tokenOut === USDC`
+   * valuation quotes. Defaults to mirroring `input.amount` so the size
+   * check passes by default. Set to a high value to force a size halt.
+   */
+  valuationUsdcOut?: bigint;
+}
+
+function makeTradingClient(opts: TradingClientOptions = {}): {
+  client: TradingClient;
+  quoteCalls: number;
+  swapCalls: number;
+} {
   let quoteCalls = 0;
   let swapCalls = 0;
   const client: TradingClient = {
-    async quote(_input: QuoteInput): Promise<QuoteResponse> {
+    async quote(input: QuoteInput): Promise<QuoteResponse> {
       quoteCalls++;
+      // `valueInUsdc` calls quote with `tokenOut === USDC` to USD-normalize
+      // a non-USDC tokenIn. We honor that case so size-check fixtures can
+      // drive the pre-flight branch deterministically.
+      const isValuation = input.tokenOut.toLowerCase() === USDC.toLowerCase();
+      const valuationOut =
+        opts.valuationUsdcOut !== undefined
+          ? opts.valuationUsdcOut.toString()
+          : input.amount.toString();
       return {
         routing: "CLASSIC",
         permitData: null,
         quote: {
           chainId: 8453,
-          input: { token: USDC, amount: "1000000" },
-          output: { token: WETH, amount: "100000000000000" },
+          input: { token: input.tokenIn, amount: input.amount.toString() },
+          output: {
+            token: input.tokenOut,
+            amount: isValuation ? valuationOut : "100000000000000",
+          },
           swapper: SWAPPER_ADDR,
         } as ClassicQuote,
       } as QuoteResponse;
@@ -169,10 +193,12 @@ interface ScenarioOptions {
   amount: bigint;
   tokenIn?: Address;
   callerEns?: string | undefined;
+  /** Forwarded to the trading-client mock — drives valuation outputs. */
+  tradingOpts?: TradingClientOptions;
 }
 
 async function runScenario(opts: ScenarioOptions) {
-  const trading = makeTradingClient();
+  const trading = makeTradingClient(opts.tradingOpts);
   const oracle = makeOracleSpy();
   const recipientProfile = makeProfile(
     "bob.eth",
@@ -245,18 +271,63 @@ describe("orchestrate — TRU-65 RiskPolicy pre-flight", () => {
     expect(trading.quoteCalls).toBe(0);
   });
 
-  it("halts on oversized amount (amount > maxAcceptedSize)", async () => {
+  it("halts on oversized amount (USDC tokenIn — no valuation call)", async () => {
+    // USDC tokenIn: amount IS already in USDC base units, no API call needed.
     const { result, trading, oracle } = await runScenario({
       policy: makePolicy({ maxAcceptedSize: 100_000_000n }), // $100
       amount: 500_000_000n, // $500
     });
 
     expect(result.haltedAt).toBe("risk-policy-deny");
-    expect(result.onboardingHint).toMatch(/caps inbound at 100000000/);
-    expect(result.onboardingHint).toMatch(/you requested 500000000/);
+    expect(result.onboardingHint).toMatch(/caps inbound at ~\$100\.00/);
+    expect(result.onboardingHint).toMatch(/your swap is valued at ~\$500\.00/);
     expect(result.onboardingHint).toMatch(/Resubmit with a smaller --amount/);
     expect(oracle.calls).toBe(0);
-    expect(trading.quoteCalls).toBe(0);
+    expect(trading.quoteCalls).toBe(0); // USDC tokenIn shortcuts valuation
+  });
+
+  it("TRU-77: USD-normalizes non-USDC tokenIn before size check (oversized)", async () => {
+    // Recipient caps at $100, swap is 0.05 WETH valued at $200 by the
+    // valuation quote. Pre-fix this would have compared raw 5e16 vs 1e8 and
+    // halted for the wrong reason; with USD-normalization the halt is for
+    // the right reason and the hint reports dollar amounts.
+    const { result, trading, oracle } = await runScenario({
+      policy: makePolicy({
+        maxAcceptedSize: 100_000_000n, // $100
+        acceptedTokens: [], // any-token, so token check passes
+      }),
+      tokenIn: WETH,
+      amount: 50_000_000_000_000_000n, // 0.05 WETH (1e16 = 0.01)
+      tradingOpts: { valuationUsdcOut: 200_000_000n }, // $200 valuation
+    });
+
+    expect(result.haltedAt).toBe("risk-policy-deny");
+    expect(result.onboardingHint).toMatch(/caps inbound at ~\$100\.00/);
+    expect(result.onboardingHint).toMatch(/your swap is valued at ~\$200\.00/);
+    expect(oracle.calls).toBe(0);
+    expect(trading.quoteCalls).toBe(1); // exactly one valuation quote
+  });
+
+  it("TRU-77: USD-normalizes non-USDC tokenIn (under cap, proceeds)", async () => {
+    // Pre-fix this would have falsely halted: raw 1e14 (0.0001 WETH ≈ $0.30)
+    // > 1e8 (cap) → "oversized". With USD-normalization the swap is valued
+    // at $0.30 < $100 cap, so it proceeds to oracle + swap.
+    const { result, trading, oracle } = await runScenario({
+      policy: makePolicy({
+        maxAcceptedSize: 100_000_000n, // $100
+        acceptedTokens: [], // any-token
+      }),
+      tokenIn: WETH,
+      amount: 100_000_000_000_000n, // 0.0001 WETH (the bug-trigger amount)
+      tradingOpts: { valuationUsdcOut: 300_000n }, // $0.30 valuation
+    });
+
+    expect(result.haltedAt).toBeUndefined();
+    expect(result.attestation).toBeDefined();
+    // 1 valuation + 1 main quote = 2 total quote calls when tokenIn !== USDC.
+    expect(trading.quoteCalls).toBe(2);
+    expect(trading.swapCalls).toBe(1);
+    expect(oracle.calls).toBe(1);
   });
 
   it("passes pre-flight when policy is satisfied — oracle is consulted", async () => {

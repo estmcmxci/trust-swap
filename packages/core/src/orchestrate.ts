@@ -26,6 +26,7 @@ import { defaultSwapPolicy } from "./policy.js";
 import { resolveRiskPolicy, type RiskPolicy } from "./risk-policy.js";
 import {
   isUniswapXQuote,
+  valueInUsdc,
   type QuoteResponse,
   type SwapTransaction,
   type TradingClient,
@@ -371,31 +372,81 @@ export async function orchestrate(
     };
   }
 
-  // 4. RiskPolicy pre-flight (TRU-65). Diagnostic only — the oracle re-runs
-  //    these checks against fresh resolutions and is the binding signal.
-  //    Short-circuiting here avoids a Trading API call + oracle round-trip
-  //    when we can already tell the swap won't satisfy the recipient.
+  // 4. RiskPolicy pre-flight (TRU-65, TRU-77). Two phases:
+  //    (a) Static checks — token allow-list + counterparty tier. No quote
+  //        needed; fires before any Trading API spend so an obvious miss
+  //        (DAI offered to a USDC-only policy, etc.) doesn't pay an RTT.
+  //    (b) Size check — `maxAcceptedSize` is denominated in USDC base
+  //        units. We USD-normalize `amount` (skip the conversion when
+  //        `tokenIn === USDC`) before comparing, so non-USDC inputs are
+  //        compared apples-to-apples instead of unit-mismatched.
+  //    Diagnostic only — the oracle re-runs both phases against fresh
+  //    resolutions and is the binding signal.
   if (recipientRiskPolicy) {
-    const hint = riskPolicyPreflight({
+    const staticHint = riskPolicyPreflightStatic({
       recipientEns: opts.recipientEns,
       tokenIn: opts.tokenIn,
-      amount: opts.amount,
       swapperProfile,
       recipientRiskPolicy,
     });
-    if (hint) {
+    if (staticHint) {
       return {
         decision,
         recipientProfile,
         recipientRiskPolicy,
         swapperProfile,
         haltedAt: "risk-policy-deny",
-        onboardingHint: hint,
+        onboardingHint: staticHint,
       };
     }
   }
 
   const amount = opts.amount;
+
+  // 4b. Size pre-flight — USD-normalize `amount` against the recipient's
+  //     `maxAcceptedSize`. Costs one extra Trading API call when
+  //     `tokenIn !== USDC`; zero when it IS USDC.
+  if (recipientRiskPolicy) {
+    let amountInUsdc: bigint;
+    try {
+      amountInUsdc = await valueInUsdc(opts.tradingClient, {
+        swapper: opts.signer.address,
+        token: opts.tokenIn,
+        amount,
+        chainId,
+      });
+    } catch (err) {
+      // Treat the valuation call like the main quote: surface as a
+      // quote-failed halt rather than silently letting the oversized
+      // swap proceed. The oracle will re-run its own valuation.
+      return {
+        decision,
+        recipientProfile,
+        recipientRiskPolicy,
+        swapperProfile,
+        haltedAt: "quote-failed",
+        onboardingHint:
+          err instanceof Error
+            ? `RiskPolicy size check valuation failed: ${err.message}`
+            : "RiskPolicy size check valuation failed",
+      };
+    }
+    const sizeHint = riskPolicyPreflightSize({
+      recipientEns: opts.recipientEns,
+      amountInUsdc,
+      recipientRiskPolicy,
+    });
+    if (sizeHint) {
+      return {
+        decision,
+        recipientProfile,
+        recipientRiskPolicy,
+        swapperProfile,
+        haltedAt: "risk-policy-deny",
+        onboardingHint: sizeHint,
+      };
+    }
+  }
 
   // 5. Fetch the quote + swap calldata from Trading API FIRST. The
   //    attestation now binds to a `calldataHash` (= keccak256 of the UR
@@ -633,15 +684,17 @@ async function resolveWithSubnameInheritance(
 // because it's a one-flag fix.)
 // ---------------------------------------------------------------------------
 
-function riskPolicyPreflight(args: {
+/**
+ * Token + tier checks. Cheap — no Trading API call needed. Run before the
+ * USD-valuation quote so an obvious miss doesn't pay an extra RTT.
+ */
+function riskPolicyPreflightStatic(args: {
   recipientEns: string;
   tokenIn: Address;
-  amount: bigint;
   swapperProfile: TrustProfile | null;
   recipientRiskPolicy: RiskPolicy;
 }): string | null {
-  const { recipientEns, tokenIn, amount, swapperProfile, recipientRiskPolicy } =
-    args;
+  const { recipientEns, tokenIn, swapperProfile, recipientRiskPolicy } = args;
 
   // 1. Token check — only meaningful when the recipient declared a non-empty
   //    accept-list. An empty list means "any token".
@@ -668,15 +721,34 @@ function riskPolicyPreflight(args: {
     }
   }
 
-  // 3. Size check — denominated in the recipient's RiskPolicy units (which
-  //    `tu policy publish` records as 6-decimal USDC base units). The CLI
-  //    must pass `amount` in matching units; we compare bigint-against-bigint
-  //    rather than trying to renormalize here.
-  if (amount > recipientRiskPolicy.maxAcceptedSize) {
-    return `${recipientEns} caps inbound at ${recipientRiskPolicy.maxAcceptedSize} base units; you requested ${amount}. Resubmit with a smaller --amount or split.`;
-  }
-
   return null;
+}
+
+/**
+ * Size check, post-USD-normalization. `amountInUsdc` and `maxAcceptedSize`
+ * share units (USDC 6-decimal base units), so the comparison is meaningful
+ * regardless of `tokenIn`.
+ */
+function riskPolicyPreflightSize(args: {
+  recipientEns: string;
+  amountInUsdc: bigint;
+  recipientRiskPolicy: RiskPolicy;
+}): string | null {
+  const { recipientEns, amountInUsdc, recipientRiskPolicy } = args;
+  if (amountInUsdc > recipientRiskPolicy.maxAcceptedSize) {
+    const maxUsd = formatUsdc(recipientRiskPolicy.maxAcceptedSize);
+    const valuedUsd = formatUsdc(amountInUsdc);
+    return `${recipientEns} caps inbound at ~$${maxUsd}; your swap is valued at ~$${valuedUsd}. Resubmit with a smaller --amount or split.`;
+  }
+  return null;
+}
+
+/** USDC base units (10^6) → human USD string with 2 decimals. */
+function formatUsdc(amount: bigint): string {
+  const cents = amount / 10_000n; // 1¢ = 10^4 base units
+  const dollars = cents / 100n;
+  const remainder = (cents % 100n).toString().padStart(2, "0");
+  return `${dollars}.${remainder}`;
 }
 
 function shortAddr(addr: string): string {
