@@ -1,0 +1,36 @@
+{
+  "scenario": "D-no-policy-fallthrough",
+  "description": "TRU-69: recipient (parent ENS) has no published RiskPolicy. Oracle's recipient-side check should no-op and proceed to sign. Swapper-side intentionally satisfied (tokenOut=USDC, amountOut=$1) so recipient-fallthrough is the visible behavior.",
+  "request": {
+    "swapperEns": "kernel.emilemarcelagustin.eth",
+    "recipientEns": "emilemarcelagustin.eth",
+    "swapper": "0xB1FF4fBC384ffC2407342d05b2bC47f0e6788d45",
+    "recipient": "0xeb0ABB367540f90B57b3d5719fd2b9c740a15022",
+    "tokenIn": "0x4200000000000000000000000000000000000006",
+    "tokenOut": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "amountIn": "300000000000000",
+    "amountOut": "1000000",
+    "calldataHash": "0xabababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "status": 200
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "attestation": {
+        "swapper": "0xB1FF4fBC384ffC2407342d05b2bC47f0e6788d45",
+        "recipient": "0xeb0ABB367540f90B57b3d5719fd2b9c740a15022",
+        "swapperTier": "full",
+        "recipientTier": "full",
+        "expiresAt": 1777497864,
+        "nonce": 1317844349,
+        "calldataHash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "signature": "0x905d01996c6cf5a921ffa6b916fe895f505f23c00730543fae92d315224140556f3aa150b6cb09e6b0dc6e319b78626a236cb8b4fade94d0dd30ae315a3757601c"
+    }
+  },
+  "durationMs": 2415,
+  "recordedAt": "2026-04-29T21:19:23.952Z",
+  "passed": true
+}

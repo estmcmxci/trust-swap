@@ -219,11 +219,17 @@ const SYNTHETIC_TXHASH: Hex = `0x${"00".repeat(32)}` as Hex;
 
 export type HaltReason =
   | "gate-deny"
+  | "risk-policy-deny"
   | "recipient-unresolved"
   | "oracle-refusal"
   | "quote-failed"
   | "swap-failed";
 
+/**
+ * @deprecated Phase 3 (TRU-65) replaced silent amount-clamping with an explicit
+ * `risk-policy-deny` halt. This type is retained only for backwards-compatible
+ * imports during the migration; orchestrate no longer populates it.
+ */
 export interface ClampApplied {
   reason: string;
   original: bigint;
@@ -269,12 +275,15 @@ export interface OrchestrateResult {
   decision: GateDecision;
   recipientProfile: TrustProfile;
   recipientRiskPolicy: RiskPolicy | null;
+  /** Resolved when `callerEns` is set; null otherwise (oracle still re-resolves). */
+  swapperProfile?: TrustProfile | null;
   attestation?: Attestation;
   attestationSignature?: Hex;
   quote?: QuoteResponse;
   swapTransaction?: SwapTransaction;
   routerCalldata?: Hex;
   txHash?: Hex;
+  /** @deprecated TRU-65 replaced clamp with halt; never populated. */
   clampApplied?: ClampApplied;
   onboardingHint?: string;
   /** The step at which the pipeline halted (if it halted). */
@@ -314,8 +323,27 @@ export async function orchestrate(
     resolveTP,
   );
 
-  // 2. Fetch the recipient's RiskPolicy (may be null).
+  // 2. Fetch the recipient's RiskPolicy unconditionally. Always surfaced in
+  //    `OrchestrateResult.recipientRiskPolicy` so callers can show a
+  //    diagnostic regardless of whether the gate or the pre-flight fires.
   const recipientRiskPolicy = await resolveRP(opts.recipientEns);
+
+  // 2b. If a callerEns is provided, resolve the swapper through TRL too. Used
+  //     by the RiskPolicy pre-flight to detect a tier mismatch locally before
+  //     spending an oracle round-trip. Failure is non-fatal — the oracle
+  //     re-resolves both sides and remains authoritative.
+  let swapperProfile: TrustProfile | null = null;
+  if (opts.callerEns) {
+    try {
+      swapperProfile = await resolveWithSubnameInheritance(
+        opts.callerEns,
+        opts.resolveOptions,
+        resolveTP,
+      );
+    } catch {
+      // swallow — pre-flight will skip the tier check; oracle still binding.
+    }
+  }
 
   // 3. Local pre-flight `gate()` — produces an early diagnostic. The oracle
   //    is the on-chain authority, but stopping here saves a Trading API
@@ -326,6 +354,7 @@ export async function orchestrate(
       decision,
       recipientProfile,
       recipientRiskPolicy,
+      swapperProfile,
       onboardingHint: onboardingHintFor(decision),
       haltedAt: "gate-deny",
     };
@@ -336,27 +365,37 @@ export async function orchestrate(
       decision,
       recipientProfile,
       recipientRiskPolicy,
+      swapperProfile,
       haltedAt: "recipient-unresolved",
       onboardingHint: `${opts.recipientEns} has no resolvable address record`,
     };
   }
 
-  // 4. Apply local clamps. The router enforces tier-bucket caps on-chain;
-  //    RiskPolicy.maxAcceptedSize is enforced by the oracle. We pre-clamp
-  //    here so the diagnostic + the actual quote are consistent.
-  let amount = opts.amount;
-  let clampApplied: ClampApplied | undefined;
-  if (
-    recipientRiskPolicy &&
-    opts.amount > recipientRiskPolicy.maxAcceptedSize
-  ) {
-    clampApplied = {
-      reason: `recipient RiskPolicy.maxAcceptedSize=${recipientRiskPolicy.maxAcceptedSize}`,
-      original: opts.amount,
-      clamped: recipientRiskPolicy.maxAcceptedSize,
-    };
-    amount = recipientRiskPolicy.maxAcceptedSize;
+  // 4. RiskPolicy pre-flight (TRU-65). Diagnostic only — the oracle re-runs
+  //    these checks against fresh resolutions and is the binding signal.
+  //    Short-circuiting here avoids a Trading API call + oracle round-trip
+  //    when we can already tell the swap won't satisfy the recipient.
+  if (recipientRiskPolicy) {
+    const hint = riskPolicyPreflight({
+      recipientEns: opts.recipientEns,
+      tokenIn: opts.tokenIn,
+      amount: opts.amount,
+      swapperProfile,
+      recipientRiskPolicy,
+    });
+    if (hint) {
+      return {
+        decision,
+        recipientProfile,
+        recipientRiskPolicy,
+        swapperProfile,
+        haltedAt: "risk-policy-deny",
+        onboardingHint: hint,
+      };
+    }
   }
+
+  const amount = opts.amount;
 
   // 5. Fetch the quote + swap calldata from Trading API FIRST. The
   //    attestation now binds to a `calldataHash` (= keccak256 of the UR
@@ -379,7 +418,7 @@ export async function orchestrate(
       decision,
       recipientProfile,
       recipientRiskPolicy,
-      clampApplied,
+      swapperProfile,
       haltedAt: "quote-failed",
       onboardingHint:
         err instanceof Error ? err.message : "trading API call failed",
@@ -411,9 +450,9 @@ export async function orchestrate(
       decision,
       recipientProfile,
       recipientRiskPolicy,
+      swapperProfile,
       quote,
       swapTransaction,
-      clampApplied,
       haltedAt: "oracle-refusal",
       onboardingHint:
         "callerEns (--caller-ens) is required when using a real oracle. Pass your identity ENS so the oracle can re-resolve your TrustProfile.",
@@ -441,9 +480,9 @@ export async function orchestrate(
         decision,
         recipientProfile,
         recipientRiskPolicy,
+        swapperProfile,
         quote,
         swapTransaction,
-        clampApplied,
         haltedAt: "oracle-refusal",
         onboardingHint: err.hint ?? err.message,
       };
@@ -466,12 +505,12 @@ export async function orchestrate(
       decision,
       recipientProfile,
       recipientRiskPolicy,
+      swapperProfile,
       attestation,
       attestationSignature,
       quote,
       swapTransaction,
       routerCalldata,
-      clampApplied,
       txHash: SYNTHETIC_TXHASH,
     };
   }
@@ -496,12 +535,12 @@ export async function orchestrate(
       decision,
       recipientProfile,
       recipientRiskPolicy,
+      swapperProfile,
       attestation,
       attestationSignature,
       quote,
       swapTransaction,
       routerCalldata,
-      clampApplied,
       haltedAt: "swap-failed",
       onboardingHint:
         err instanceof Error ? err.message : "signer.execute failed",
@@ -512,13 +551,13 @@ export async function orchestrate(
     decision,
     recipientProfile,
     recipientRiskPolicy,
+    swapperProfile,
     attestation,
     attestationSignature,
     quote,
     swapTransaction,
     routerCalldata,
     txHash,
-    clampApplied,
   };
 }
 
@@ -578,6 +617,70 @@ async function resolveWithSubnameInheritance(
   } catch {
     return profile;
   }
+}
+
+// ---------------------------------------------------------------------------
+// RiskPolicy pre-flight (TRU-65)
+//
+// Returns a hint string when the swap will *clearly* fail the recipient's
+// RiskPolicy. Returns null when nothing trips — the oracle still re-validates
+// against fresh resolutions and is the binding signal.
+//
+// Order of checks: token → tier → size. Each is independently sufficient to
+// halt; we report the first that fires so the user sees the most actionable
+// fix. (Tokens first because it's the most common misconfiguration; tier
+// next because resolving an identity layer takes the longest; size last
+// because it's a one-flag fix.)
+// ---------------------------------------------------------------------------
+
+function riskPolicyPreflight(args: {
+  recipientEns: string;
+  tokenIn: Address;
+  amount: bigint;
+  swapperProfile: TrustProfile | null;
+  recipientRiskPolicy: RiskPolicy;
+}): string | null {
+  const { recipientEns, tokenIn, amount, swapperProfile, recipientRiskPolicy } =
+    args;
+
+  // 1. Token check — only meaningful when the recipient declared a non-empty
+  //    accept-list. An empty list means "any token".
+  if (recipientRiskPolicy.acceptedTokens.length > 0) {
+    const offered = tokenIn.toLowerCase();
+    const accepted = recipientRiskPolicy.acceptedTokens.map((t) =>
+      t.toLowerCase(),
+    );
+    if (!accepted.includes(offered)) {
+      const list = recipientRiskPolicy.acceptedTokens
+        .map(shortAddr)
+        .join(", ");
+      return `${recipientEns} accepts only ${list}; you offered ${shortAddr(tokenIn)}.`;
+    }
+  }
+
+  // 2. Tier check — requires a resolved swapper profile, which only exists
+  //    when callerEns was passed. Skip silently when absent (oracle covers).
+  if (swapperProfile) {
+    const swapperIdx = TIER_INDEX[swapperProfile.trustScore];
+    const minIdx = TIER_INDEX[recipientRiskPolicy.minCounterpartyTier];
+    if (swapperIdx < minIdx) {
+      return `${recipientEns} requires tier \`${recipientRiskPolicy.minCounterpartyTier}\`+; you're at \`${swapperProfile.trustScore}\`. Resolve via AgentBook → AIP manifest.`;
+    }
+  }
+
+  // 3. Size check — denominated in the recipient's RiskPolicy units (which
+  //    `tu policy publish` records as 6-decimal USDC base units). The CLI
+  //    must pass `amount` in matching units; we compare bigint-against-bigint
+  //    rather than trying to renormalize here.
+  if (amount > recipientRiskPolicy.maxAcceptedSize) {
+    return `${recipientEns} caps inbound at ${recipientRiskPolicy.maxAcceptedSize} base units; you requested ${amount}. Resubmit with a smaller --amount or split.`;
+  }
+
+  return null;
+}
+
+function shortAddr(addr: string): string {
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
 function onboardingHintFor(decision: GateDecision): string {

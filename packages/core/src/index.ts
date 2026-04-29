@@ -36,8 +36,16 @@ export {
   RiskPolicyError,
   parseRiskPolicy,
   resolveRiskPolicy,
+  resolveRiskPolicyWithProvenance,
+  publishRiskPolicy,
+  serializeRiskPolicy,
   type RiskPolicy,
   type ResolveRiskPolicyOptions,
+  type RiskPolicyProvenance,
+  type RiskPolicyResolution,
+  type PublishRiskPolicyOptions,
+  type PublishRiskPolicyResult,
+  type PublishRiskPolicyStorage,
 } from "./risk-policy.js";
 
 export {

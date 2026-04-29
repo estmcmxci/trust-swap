@@ -16,6 +16,7 @@ config({ path: ".env.local", override: true });
 
 import { Cli, z } from "incur";
 import { runSwap } from "./commands/swap.js";
+import { runPolicyPublish, runPolicyShow } from "./commands/policy.js";
 
 const cli = Cli.create("tru", {
   version: "0.0.0",
@@ -130,10 +131,111 @@ cli.command("swap", {
       haltedAt: result.haltedAt,
       txHash: result.txHash,
       attestation: result.attestation,
-      clampApplied: result.clampApplied,
     };
   },
 });
+
+// ---------------------------------------------------------------------------
+// `tru policy publish` + `tru policy show` (Phase 3 — TRU-62)
+// ---------------------------------------------------------------------------
+
+const policy = Cli.create("policy", {
+  description: "Manage your published RiskPolicy on ENS.",
+});
+
+policy.command("publish", {
+  description:
+    "Write your `agent-risk-policy` ENS text record. Requires ENS_PRIVATE_KEY (controller key) in env.",
+  options: z.object({
+    ensName: z
+      .string()
+      .optional()
+      .describe(
+        "ENS name to publish on. Defaults to ENS_PRIMARY_NAME env var if set.",
+      ),
+    minTier: z
+      .enum(["registered", "discoverable", "verified", "full"])
+      .describe(
+        "Minimum counterparty tier you'll accept. Cannot be 'none' — that would loosen the router floor.",
+      ),
+    maxSize: z
+      .number()
+      .positive()
+      .describe(
+        "Maximum inbound size in USD (e.g. 5000 for $5k). Stored as 6-decimal USDC base units.",
+      ),
+    tokens: z
+      .string()
+      .describe(
+        "Comma-separated symbols (USDC, WETH, ETH) or 0x addresses you'll accept inbound.",
+      ),
+    requireManifestSig: z
+      .boolean()
+      .optional()
+      .describe(
+        "Require a verified AIP manifest signature on the counterparty.",
+      ),
+    validUntil: z
+      .string()
+      .optional()
+      .describe(
+        "ISO-8601 timestamp; the policy is treated as absent past this.",
+      ),
+    storage: z
+      .enum(["inline", "ipfs", "auto"])
+      .optional()
+      .describe(
+        "Where to store the serialized policy. Default: auto (inline if it fits, else IPFS).",
+      ),
+  }),
+  alias: { ensName: "e", minTier: "t", maxSize: "s", tokens: "k" },
+  examples: [
+    {
+      options: {
+        ensName: "alice.eth",
+        minTier: "verified",
+        maxSize: 5000,
+        tokens: "USDC,WETH",
+      },
+      description: "Accept verified+ counterparties up to $5k in USDC or WETH",
+    },
+    {
+      options: {
+        ensName: "alice.eth",
+        minTier: "full",
+        maxSize: 100,
+        tokens: "USDC",
+        requireManifestSig: true,
+        validUntil: "2026-12-31T00:00:00Z",
+      },
+      description: "Strictest: full-tier only, $100 cap, USDC only, manifest-verified, expires EOY",
+    },
+  ],
+  async run({ options }) {
+    const result = await runPolicyPublish(options);
+    return result;
+  },
+});
+
+policy.command("show", {
+  description:
+    "Fetch and pretty-print another agent's published RiskPolicy + provenance.",
+  args: z.object({
+    ens: z.string().describe("ENS name to query"),
+  }),
+  examples: [
+    {
+      args: { ens: "emilemarcelagustin.eth" },
+      description: "Show emilemarcelagustin.eth's RiskPolicy if published",
+    },
+  ],
+  async run({ args }) {
+    const result = await runPolicyShow({ ens: args.ens });
+    return result;
+  },
+});
+
+cli.command(policy);
 
 cli.serve();
 

@@ -1,0 +1,29 @@
+{
+  "scenario": "B-recipient-size-reject",
+  "description": "Recipient policy maxAcceptedSize=$100; request $200 inbound. Recipient-side check should fire with maxAcceptedSize error.",
+  "request": {
+    "swapperEns": "emilemarcelagustin.eth",
+    "recipientEns": "kernel.emilemarcelagustin.eth",
+    "swapper": "0xeb0ABB367540f90B57b3d5719fd2b9c740a15022",
+    "recipient": "0xB1FF4fBC384ffC2407342d05b2bC47f0e6788d45",
+    "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "tokenOut": "0x4200000000000000000000000000000000000006",
+    "amountIn": "200000000",
+    "amountOut": "60000000000000",
+    "calldataHash": "0xabababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "status": 403,
+    "errorContains": "maxAcceptedSize=100000000"
+  },
+  "response": {
+    "status": 403,
+    "body": {
+      "error": "recipient RiskPolicy.maxAcceptedSize=100000000 exceeded by amount 200000000",
+      "hint": "resubmit with amount <= 100000000"
+    }
+  },
+  "durationMs": 5700,
+  "recordedAt": "2026-04-29T21:19:06.674Z",
+  "passed": true
+}

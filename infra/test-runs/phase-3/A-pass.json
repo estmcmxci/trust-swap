@@ -1,0 +1,36 @@
+{
+  "scenario": "A-pass",
+  "description": "Recipient policy fully satisfied: $1 USDC inbound, kernel inherits verified, USDC ∈ acceptedTokens. Swapper has no policy → swapper-side check no-ops. Oracle should sign.",
+  "request": {
+    "swapperEns": "emilemarcelagustin.eth",
+    "recipientEns": "kernel.emilemarcelagustin.eth",
+    "swapper": "0xeb0ABB367540f90B57b3d5719fd2b9c740a15022",
+    "recipient": "0xB1FF4fBC384ffC2407342d05b2bC47f0e6788d45",
+    "tokenIn": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+    "tokenOut": "0x4200000000000000000000000000000000000006",
+    "amountIn": "1000000",
+    "amountOut": "300000000000000",
+    "calldataHash": "0xabababababababababababababababababababababababababababababababab"
+  },
+  "expected": {
+    "status": 200
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "attestation": {
+        "swapper": "0xeb0ABB367540f90B57b3d5719fd2b9c740a15022",
+        "recipient": "0xB1FF4fBC384ffC2407342d05b2bC47f0e6788d45",
+        "swapperTier": "full",
+        "recipientTier": "full",
+        "expiresAt": 1777497840,
+        "nonce": 3245936053,
+        "calldataHash": "0xabababababababababababababababababababababababababababababababab"
+      },
+      "signature": "0x022f79a0a3bc1edf695ffc0d033cc41515c7f3a9ecb66889ed32d5df710af9a45726a61441dc55975f5ff0b0c4e78acfe2c5591c9d5316cca468f28972f396d61b"
+    }
+  },
+  "durationMs": 3391,
+  "recordedAt": "2026-04-29T21:19:00.974Z",
+  "passed": true
+}

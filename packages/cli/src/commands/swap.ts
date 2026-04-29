@@ -211,15 +211,6 @@ function printTranscript(r: OrchestrateResult, ctx: PrintContext): void {
     console.log(colors.dim(`    acceptedTokens: ${rp.acceptedTokens.length} token(s)`));
   }
 
-  // Clamp diagnostic
-  if (r.clampApplied) {
-    console.log();
-    console.log(
-      `  ${colors.yellow("⚠ Clamp")}: ${r.clampApplied.original} → ${r.clampApplied.clamped}`,
-    );
-    console.log(colors.dim(`    reason: ${r.clampApplied.reason}`));
-  }
-
   // Halt with hint
   if (r.haltedAt) {
     console.log();
