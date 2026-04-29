@@ -274,6 +274,18 @@ export async function orchestrate(
   const resolveRP = opts.resolveRiskPolicyFn ?? resolveRiskPolicy;
   const dryRun = opts.dryRun ?? true; // Phase 1 default: never broadcast
 
+  // Refuse to broadcast against the placeholder. Without this, a caller who
+  // forgets to pass `routerAddress` while flipping `dryRun: false` would send
+  // a real transaction to 0x000…000 — burning any attached native value
+  // (e.g. ETH input swaps) with no recovery path. Phase 2 deploys the real
+  // router and callers must thread the deployed address through explicitly.
+  if (!dryRun && routerAddress === PLACEHOLDER_ROUTER_ADDRESS) {
+    throw new Error(
+      "orchestrate: refusing to broadcast — `routerAddress` is required when `dryRun` is false. " +
+        "Phase 2's `TrustSwapRouter` deploy address must be passed explicitly.",
+    );
+  }
+
   // 1. Resolve the recipient through TRL.
   const recipientProfile = await resolveTP(opts.recipientEns, opts.resolveOptions);
 

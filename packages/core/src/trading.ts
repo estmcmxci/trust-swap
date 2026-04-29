@@ -65,10 +65,22 @@ export interface SwapInput {
 }
 
 export interface SwapStatusInput {
-  /** For CLASSIC: pass `txHash`. For UniswapX: pass `orderHash`. */
-  txHash?: Hex;
-  orderHash?: Hex;
-  chainId: number;
+  /** One or more transaction hashes to poll. The Trading API accepts an array. */
+  txHashes: Hex[];
+  /** Optional chain ID. Defaults to 1 server-side; pass 8453 for Base. */
+  chainId?: number;
+}
+
+export interface OrderStatusInput {
+  /** Single UniswapX order ID. */
+  orderId?: string;
+  /** Multiple UniswapX order IDs. */
+  orderIds?: string[];
+  /** Filter by status. Useful when listing without a specific ID. */
+  orderStatus?: "open" | "filled" | "cancelled" | "expired" | "error";
+  /** Filter by swapper address (the user who signed the order). */
+  swapper?: Address;
+  limit?: number;
 }
 
 export interface SwappableTokensInput {
@@ -160,12 +172,30 @@ export interface SwapResponse {
   swap: SwapTransaction;
 }
 
+export interface SwapEntry {
+  swapType: string;
+  /** "PENDING" | "SUCCESS" | "FAILED" | "EXPIRED" | (other API-side values) */
+  status: string;
+  txHash: Hex;
+  swapId: string;
+}
+
 export interface SwapStatusResponse {
-  /** "FILLED" | "EXPIRED" | "ERROR" | "OPEN" | "INSUFFICIENT_FUNDS" | "PENDING" | "SUCCESS" */
-  swapStatus: string;
-  txHash?: Hex;
-  orderHash?: Hex;
-  fillBlock?: number;
+  requestId: string;
+  swaps: SwapEntry[];
+}
+
+export interface OrderEntry {
+  orderId: string;
+  swapper?: Address;
+  filler?: Address;
+  status: string;
+  createdAt?: string;
+  filledAt?: string;
+}
+
+export interface OrderStatusResponse {
+  orders: OrderEntry[];
 }
 
 export interface TokenInfo {
@@ -245,7 +275,10 @@ export interface TradingClient {
   checkApproval(input: CheckApprovalInput): Promise<CheckApprovalResponse>;
   quote(input: QuoteInput): Promise<QuoteResponse>;
   swap(input: SwapInput): Promise<SwapResponse>;
+  /** Poll the status of one or more CLASSIC swaps. Hits `GET /swaps`. */
   swapStatus(input: SwapStatusInput): Promise<SwapStatusResponse>;
+  /** Poll the status of UniswapX gasless orders. Hits `GET /orders`. */
+  orderStatus(input: OrderStatusInput): Promise<OrderStatusResponse>;
   swappableTokens(input: SwappableTokensInput): Promise<SwappableTokensResponse>;
 }
 
@@ -341,16 +374,47 @@ export function createTradingClient(opts: TradingClientOptions): TradingClient {
     },
 
     async swapStatus(input) {
-      if (!input.txHash && !input.orderHash) {
-        throw new Error("swapStatus: pass either txHash or orderHash");
+      if (!input.txHashes || input.txHashes.length === 0) {
+        throw new Error("swapStatus: txHashes must be a non-empty array");
       }
+      // The Trading API expects repeated `txHashes=...` query keys, one per
+      // hash. URLSearchParams.append produces that shape correctly.
       const params = new URLSearchParams();
-      if (input.txHash) params.set("txHash", input.txHash);
-      if (input.orderHash) params.set("orderHash", input.orderHash);
-      params.set("chainId", String(input.chainId));
+      for (const h of input.txHashes) params.append("txHashes", h);
+      if (input.chainId !== undefined) {
+        params.set("chainId", String(input.chainId));
+      }
       return request<SwapStatusResponse>(
         "GET",
-        `/swaps/status?${params.toString()}`,
+        `/swaps?${params.toString()}`,
+      );
+    },
+
+    async orderStatus(input) {
+      if (
+        !input.orderId &&
+        !input.orderIds?.length &&
+        !input.orderStatus &&
+        !input.swapper
+      ) {
+        throw new Error(
+          "orderStatus: at least one of orderId, orderIds, orderStatus, or swapper is required",
+        );
+      }
+      const params = new URLSearchParams();
+      if (input.orderId) params.set("orderId", input.orderId);
+      if (input.orderIds?.length) {
+        params.set("orderIds", input.orderIds.join(","));
+      }
+      if (input.orderStatus) params.set("orderStatus", input.orderStatus);
+      if (input.swapper) {
+        assertAddress("swapper", input.swapper);
+        params.set("swapper", input.swapper);
+      }
+      if (input.limit !== undefined) params.set("limit", String(input.limit));
+      return request<OrderStatusResponse>(
+        "GET",
+        `/orders?${params.toString()}`,
       );
     },
 
