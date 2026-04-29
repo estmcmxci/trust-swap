@@ -162,7 +162,7 @@ policy.command("publish", {
       .number()
       .positive()
       .describe(
-        "Maximum inbound size in USD (e.g. 5000 for $5k). Stored as 6-decimal USDC base units.",
+        "Maximum inbound size in USD (e.g. 5000 for $5k). Stored as 6-decimal USDC base units; the orchestrator + oracle USD-normalize the swap amount via the Trading API before comparing against this cap, so non-USDC tokenIn works correctly.",
       ),
     tokens: z
       .string()

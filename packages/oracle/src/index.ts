@@ -9,12 +9,15 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
+  createEnsClient,
   resolve,
+  resolveAddress,
   type TrustProfile,
   type TrustTier,
 } from "@synthesis/resolver";
 import {
   resolveRiskPolicy,
+  USDC_BY_CHAIN,
   type Attestation,
   type AttestErrorResponse,
   type AttestResponse,
@@ -41,6 +44,17 @@ interface Env {
   ORACLE_PRIVATE_KEY?: string;
   ORACLE_PUBKEY_ADDRESS?: string;
   ETH_RPC_URL?: string;
+  /**
+   * Trading API key for USD-valuation quotes used in the
+   * `RiskPolicy.maxAcceptedSize` check (TRU-77). Optional — when absent
+   * the size check is skipped (logged) and the oracle falls back to the
+   * router floor + tier/token enforcement only.
+   */
+  UNISWAP_API_KEY?: string;
+  /** Override the Trading API base URL. Defaults to the production gateway. */
+  UNISWAP_TRADING_API_URL?: string;
+  /** Default chain for valuation quotes. Defaults to 8453 (Base). */
+  ATTEST_CHAIN_ID?: string;
 }
 
 const VERSION = "0.1.0-phase2";
@@ -153,6 +167,23 @@ app.post("/attest", async (c) => {
     );
   }
 
+  // TRU-76: synthesis's parallel layer queries occasionally return
+  // `address: null` for an ENS name with a real address record (transient
+  // ENS RPC race across the layer fetches). Mirror orchestrate's
+  // single-purpose `resolveAddress` fallback before the mismatch check
+  // 400s the request — same data source, fewer parallel calls = fewer
+  // races. Has zero effect when synthesis returned a concrete address.
+  swapperProfile = await fillAddressFallback(
+    swapperProfile,
+    body.swapperEns,
+    ensRpcUrl,
+  );
+  recipientProfile = await fillAddressFallback(
+    recipientProfile,
+    body.recipientEns,
+    ensRpcUrl,
+  );
+
   if (
     !swapperProfile.address ||
     swapperProfile.address.toLowerCase() !== body.swapper.toLowerCase()
@@ -223,8 +254,13 @@ app.post("/attest", async (c) => {
   let recipientRiskPolicy: RiskPolicy | null;
   try {
     [swapperRiskPolicy, recipientRiskPolicy] = await Promise.all([
-      resolveRiskPolicy(body.swapperEns, { ensRpcUrl }),
-      resolveRiskPolicy(body.recipientEns, { ensRpcUrl }),
+      // TRU-76: pin reads to `finalized` so a publisher can't race a
+      // policy `setText` into the read-replica propagation window
+      // ahead of a swap. Costs ~12s of staleness vs eliminates the
+      // race; safe trade-off because policies are configuration, not
+      // a hot-path signal.
+      resolveRiskPolicy(body.swapperEns, { ensRpcUrl, blockTag: "finalized" }),
+      resolveRiskPolicy(body.recipientEns, { ensRpcUrl, blockTag: "finalized" }),
     ]);
   } catch (err) {
     return c.json<AttestErrorResponse>(
@@ -236,6 +272,107 @@ app.post("/attest", async (c) => {
   }
 
   const amountIn = BigInt(body.amountIn);
+  // Codex P2 #3: enforce the swapper's `maxAcceptedSize` against the
+  // amount they will RECEIVE (tokenOut). Legacy mock path may omit
+  // `amountOut` — falls back to 0n which silently skips the size check.
+  const swapperInboundAmount = body.amountOut ? BigInt(body.amountOut) : 0n;
+
+  // TRU-77: USD-normalize both inbound amounts before the size check.
+  // `RiskPolicy.maxAcceptedSize` is denominated in USDC 6-dec base units
+  // (= USD × 10^6), so comparing it directly against `amountIn` /
+  // `amountOut` only lines up when the swap involves USDC. We fetch a
+  // `token → USDC` Trading-API quote to value non-USDC inputs.
+  //
+  // If `UNISWAP_API_KEY` is unset OR a valuation call fails, that side's
+  // size check skips (defense: tier + token + router floor still bind).
+  // **Per-side isolation (codex P1, PR #5)**: each valuation runs in its
+  // own try/catch so a single rejection (e.g. one token quote fails)
+  // doesn't disable the *other* side's size check. An attacker who can
+  // cause one valuation to fail must NOT thereby bypass the other
+  // policy's cap.
+  const chainIdForValuation =
+    Number(env.ATTEST_CHAIN_ID ?? "8453") || 8453;
+  const tradingApiKey = env.UNISWAP_API_KEY;
+  const tradingApiUrl =
+    env.UNISWAP_TRADING_API_URL ?? "https://trade-api.gateway.uniswap.org/v1";
+
+  const recipientPolicyHasSize =
+    recipientRiskPolicy !== null &&
+    recipientRiskPolicy.maxAcceptedSize > 0n &&
+    amountIn > 0n;
+  const swapperPolicyHasSize =
+    swapperRiskPolicy !== null &&
+    swapperRiskPolicy.maxAcceptedSize > 0n &&
+    swapperInboundAmount > 0n;
+
+  let amountInUsdc = 0n;
+  let amountOutUsdc = 0n;
+  const valuationSkipReasons: Array<{ side: "in" | "out"; reason: string }> =
+    [];
+
+  if (recipientPolicyHasSize || swapperPolicyHasSize) {
+    if (!tradingApiKey) {
+      const reason = "UNISWAP_API_KEY unset — size check skipped";
+      if (recipientPolicyHasSize)
+        valuationSkipReasons.push({ side: "in", reason });
+      if (swapperPolicyHasSize)
+        valuationSkipReasons.push({ side: "out", reason });
+    } else {
+      // Run both valuations concurrently but isolate their failure
+      // domains. Promise.allSettled means a single reject doesn't drop
+      // the sibling result on the floor — the surviving side still gets
+      // its size check enforced.
+      const [inResult, outResult] = await Promise.allSettled([
+        recipientPolicyHasSize
+          ? valueInUsdcViaTradingApi({
+              token: body.tokenIn,
+              amount: amountIn,
+              chainId: chainIdForValuation,
+              swapper: body.swapper,
+              apiKey: tradingApiKey,
+              apiUrl: tradingApiUrl,
+            })
+          : Promise.resolve(0n),
+        swapperPolicyHasSize
+          ? valueInUsdcViaTradingApi({
+              token: body.tokenOut,
+              amount: swapperInboundAmount,
+              chainId: chainIdForValuation,
+              swapper: body.swapper,
+              apiKey: tradingApiKey,
+              apiUrl: tradingApiUrl,
+            })
+          : Promise.resolve(0n),
+      ]);
+      if (inResult.status === "fulfilled") {
+        amountInUsdc = inResult.value;
+      } else if (recipientPolicyHasSize) {
+        valuationSkipReasons.push({
+          side: "in",
+          reason: `tokenIn valuation failed: ${inResult.reason instanceof Error ? inResult.reason.message : String(inResult.reason)}`,
+        });
+      }
+      if (outResult.status === "fulfilled") {
+        amountOutUsdc = outResult.value;
+      } else if (swapperPolicyHasSize) {
+        valuationSkipReasons.push({
+          side: "out",
+          reason: `tokenOut valuation failed: ${outResult.reason instanceof Error ? outResult.reason.message : String(outResult.reason)}`,
+        });
+      }
+    }
+  }
+  for (const skip of valuationSkipReasons) {
+    console.log(
+      JSON.stringify({
+        event: "attest.size-check-skipped",
+        side: skip.side,
+        reason: skip.reason,
+        swapperEns: body.swapperEns,
+        recipientEns: body.recipientEns,
+      }),
+    );
+  }
 
   const fromSwapperToRecipient = checkRiskPolicy({
     sourceLabel: "recipient",
@@ -245,17 +382,12 @@ app.post("/attest", async (c) => {
       swapperProfile.manifest.found &&
       swapperProfile.manifest.signatureValid,
     tokenInbound: body.tokenIn,
-    amountInbound: amountIn,
+    amountInboundUsdc: amountInUsdc,
   });
   if (fromSwapperToRecipient.error) {
     return c.json<AttestErrorResponse>(fromSwapperToRecipient.error, 403);
   }
 
-  // Codex P2 #3: enforce the swapper's `maxAcceptedSize` against the
-  // amount they will RECEIVE (tokenOut) — not 0n. If the caller
-  // didn't supply `amountOut` (legacy mock path), this falls back to 0n
-  // and the size check is silently skipped, same as before.
-  const swapperInboundAmount = body.amountOut ? BigInt(body.amountOut) : 0n;
   const fromRecipientToSwapper = checkRiskPolicy({
     sourceLabel: "swapper",
     policy: swapperRiskPolicy,
@@ -264,7 +396,7 @@ app.post("/attest", async (c) => {
       recipientProfile.manifest.found &&
       recipientProfile.manifest.signatureValid,
     tokenInbound: body.tokenOut,
-    amountInbound: swapperInboundAmount,
+    amountInboundUsdc: amountOutUsdc,
   });
   if (fromRecipientToSwapper.error) {
     return c.json<AttestErrorResponse>(fromRecipientToSwapper.error, 403);
@@ -360,7 +492,13 @@ interface RiskPolicyCheckInput {
   counterpartyTier: TrustTier;
   counterpartyManifestSigValid: boolean;
   tokenInbound: Address;
-  amountInbound: bigint;
+  /**
+   * Inbound amount valued in USDC 6-dec base units. The caller is
+   * responsible for the `tokenInbound → USDC` conversion via the
+   * Trading API; passing 0n here disables the size check (legacy
+   * mock callers, valuation-skipped paths).
+   */
+  amountInboundUsdc: bigint;
 }
 
 function checkRiskPolicy(
@@ -381,11 +519,14 @@ function checkRiskPolicy(
     };
   }
 
-  if (input.amountInbound > 0n && input.amountInbound > p.maxAcceptedSize) {
+  if (
+    input.amountInboundUsdc > 0n &&
+    input.amountInboundUsdc > p.maxAcceptedSize
+  ) {
     return {
       error: {
-        error: `${input.sourceLabel} RiskPolicy.maxAcceptedSize=${p.maxAcceptedSize} exceeded by amount ${input.amountInbound}`,
-        hint: `resubmit with amount <= ${p.maxAcceptedSize}`,
+        error: `${input.sourceLabel} RiskPolicy.maxAcceptedSize=${p.maxAcceptedSize} (USD base units) exceeded by valued amount ${input.amountInboundUsdc}`,
+        hint: `resubmit with amount valued <= $${(Number(p.maxAcceptedSize) / 1e6).toFixed(2)}`,
       },
     };
   }
@@ -456,6 +597,32 @@ function encodeAttestationDigest(att: Attestation): Hex {
 // not from `alice.eth`.
 // ---------------------------------------------------------------------------
 
+/**
+ * If `synthesis.resolve` returned `address: null`, try the focused
+ * `resolveAddress` lookup — synthesis's address layer races against the
+ * other parallel layer fetches; a single-purpose call sidesteps the race.
+ * Returns the original profile unchanged when the address is already set.
+ *
+ * (TRU-76 — ports the orchestrate-side fallback into the oracle Worker so
+ * a transient null doesn't 400 the request.)
+ */
+async function fillAddressFallback(
+  profile: TrustProfile,
+  ensName: string,
+  ensRpcUrl: string | undefined,
+): Promise<TrustProfile> {
+  if (profile.address) return profile;
+  try {
+    const client = createEnsClient(ensRpcUrl);
+    const recovered = await resolveAddress(client, ensName);
+    if (recovered) return { ...profile, address: recovered };
+  } catch {
+    // Swallow — the caller's mismatch check will surface the null with a
+    // useful error if the fallback also fails.
+  }
+  return profile;
+}
+
 async function inheritTierFromParent(
   rawTier: TrustTier,
   ensName: string,
@@ -484,4 +651,77 @@ function randomNonce(): number {
   return (
     (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | buf[3]
   ) >>> 0;
+}
+
+// ---------------------------------------------------------------------------
+// USD valuation (TRU-77)
+//
+// The oracle calls the Trading API directly to USD-normalize swap amounts
+// before the `RiskPolicy.maxAcceptedSize` check. We can't import the
+// `@trust-swap/core` `valueInUsdc` helper directly because it depends on
+// the full `TradingClient` (which carries node-only Buffer paths via
+// transitive deps); a small CF-Worker-friendly wrapper around `fetch` is
+// cheaper than wiring the full client.
+// ---------------------------------------------------------------------------
+
+interface ValueInUsdcViaTradingApiArgs {
+  token: Address;
+  amount: bigint;
+  chainId: number;
+  swapper: Address;
+  apiKey: string;
+  apiUrl: string;
+}
+
+async function valueInUsdcViaTradingApi(
+  args: ValueInUsdcViaTradingApiArgs,
+): Promise<bigint> {
+  const usdc = USDC_BY_CHAIN[args.chainId];
+  if (!usdc) {
+    throw new Error(
+      `valueInUsdcViaTradingApi: no USDC address for chainId ${args.chainId}`,
+    );
+  }
+  if (args.token.toLowerCase() === usdc.toLowerCase()) return args.amount;
+  if (args.amount === 0n) return 0n;
+
+  const body = {
+    swapper: args.swapper,
+    tokenIn: args.token,
+    tokenOut: usdc,
+    tokenInChainId: String(args.chainId),
+    tokenOutChainId: String(args.chainId),
+    amount: args.amount.toString(),
+    type: "EXACT_INPUT",
+    slippageTolerance: 0.5,
+    routingPreference: "BEST_PRICE",
+  };
+  const res = await fetch(`${args.apiUrl.replace(/\/+$/, "")}/quote`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": args.apiKey,
+      "x-universal-router-version": "2.0",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(
+      `Trading API ${res.status}: ${txt.slice(0, 160) || res.statusText}`,
+    );
+  }
+  const data = (await res.json()) as {
+    routing?: string;
+    quote?: {
+      output?: { amount?: string };
+      orderInfo?: { outputs?: Array<{ startAmount?: string }> };
+    };
+  };
+  // CLASSIC quotes: quote.output.amount; UniswapX: quote.orderInfo.outputs[0].startAmount.
+  const classic = data.quote?.output?.amount;
+  if (classic) return BigInt(classic);
+  const uniswapx = data.quote?.orderInfo?.outputs?.[0]?.startAmount;
+  if (uniswapx) return BigInt(uniswapx);
+  throw new Error(`Trading API valuation: unexpected response shape`);
 }

@@ -388,6 +388,11 @@ The **read** path is where reality bites for production gating:
   hot path needs to pin to `finalized` blockTag (~12s steady-state cost)
   or accept that an attacker could race a freshly-published stricter
   policy by sliding their swap into the propagation window.
+  **Resolved (TRU-76)**: orchestrate + oracle now pin to `finalized` for
+  RiskPolicy reads (`tru policy show` keeps `latest` for read-after-write
+  UX). `resolveRiskPolicyWithProvenance` accepts an optional `blockTag`
+  (`"latest" | "finalized" | bigint`) plumbed down to viem's
+  `getEnsText`.
 
 - **Synthesis resolver flake.** The Trust Resolution Layer fires 5+
   parallel ENS queries per profile (Personhood, Identity, Context,
@@ -395,9 +400,11 @@ The **read** path is where reality bites for production gating:
   — most commonly `address: null` for a name that has a real address
   record, occasionally `tier=none` for a verified profile. Our local
   orchestrator has a single-purpose `resolveAddress` fallback that
-  recovers cleanly; the deployed Cloudflare Worker oracle does not yet,
-  so a single transient null returns a 400 to the client. Sub-issue
-  filed (TRU-76).
+  recovers cleanly. **Resolved (TRU-76)**: ported the same fallback
+  into the Cloudflare Worker oracle (`fillAddressFallback`) so a
+  single transient null no longer 400s the request. Tier-none flake
+  is still handled by client-side retry in
+  `scripts/test-bidirectional-policy.ts`.
 
 If Trading API ever ships **server-side ENS resolution** (per Tier 1
 above), it will face exactly these two issues and need to choose between
@@ -424,15 +431,25 @@ records, not just unit-tested with mocks.
 
 Our RiskPolicy `maxAcceptedSize` is denominated in 6-decimal USDC base
 units (matches the off-chain tier-bucket table). The oracle and
-orchestrator compare it directly against `amountIn` / `amountOut`, which
-are in the *swap token's* native base units. They line up when the swap
-involves USDC and diverge wildly otherwise (1 WETH = 10^18 base units
-gets compared against 100_000_000 = $100). Fix is structural — any
-policy layer that wants to express USD caps needs the Trading API to
-return a USD-equivalent on both sides of the quote, or every consumer
-re-fetches a `tokenIn → USDC` quote to convert. Tracked locally as
-TRU-77; flagging here because **this is exactly the kind of concern an
-attestation-aware Trading API would smooth over.**
+orchestrator originally compared it directly against `amountIn` /
+`amountOut`, which are in the *swap token's* native base units. They
+line up when the swap involves USDC and diverge wildly otherwise (1 WETH
+= 10^18 base units gets compared against 100_000_000 = $100).
+
+**Resolved (TRU-77)**: both orchestrate and the oracle now USD-normalize
+the inbound amount via a `tokenIn → USDC` Trading API quote before the
+size check. Skips the API call when the token already IS USDC. The
+oracle Worker requires a `UNISWAP_API_KEY` wrangler secret for this; if
+unset, the size check is skipped (logged) and tier/token enforcement
+still binds. Documented in `tru policy publish --max-size` help text and
+covered by `orchestrate.test.ts` non-USDC fixtures.
+
+The structural concern that motivated this still stands: **any policy
+layer expressing USD caps over a multi-token surface needs an
+authoritative USD-equivalent on every quote, or every consumer redoes
+the work.** This is exactly the kind of concern an attestation-aware
+Trading API would smooth over by returning `inputUsd` / `outputUsd`
+fields alongside `gasFeeUSD`.
 
 ---
 
