@@ -151,13 +151,20 @@ export async function resolveRiskPolicyWithProvenance(
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const name = normalizeName(ensName);
 
+  // Track whether any source produced a parseable-but-expired policy. If
+  // every source either returns expired or nothing, we report "expired"
+  // rather than "absent" so callers can distinguish stale config from
+  // unconfigured. An expired result in one source still falls through to
+  // the next — `endpoint` may be stale while the text record is current.
+  let sawExpired = false;
+
   // 1. Endpoint override — fetch from `<endpoint>/policy`
   const endpoint = await safeReadTextRecord(client, name, ENDPOINT_KEY);
   if (endpoint) {
     const policy = await fetchPolicyFromEndpoint(endpoint, fetchImpl);
     if (policy) {
-      if (isExpired(policy, now())) return { policy: null, source: "expired" };
-      return { policy, source: "endpoint" };
+      if (!isExpired(policy, now())) return { policy, source: "endpoint" };
+      sawExpired = true;
     }
   }
 
@@ -168,13 +175,14 @@ export async function resolveRiskPolicyWithProvenance(
       raw.trim().startsWith("ipfs://") || /^(Qm|bafy)/.test(raw.trim());
     const policy = await decodePolicyTextRecord(raw);
     if (policy) {
-      if (isExpired(policy, now())) return { policy: null, source: "expired" };
-      return { policy, source: isIpfs ? "ipfs" : "text-record" };
+      if (!isExpired(policy, now()))
+        return { policy, source: isIpfs ? "ipfs" : "text-record" };
+      sawExpired = true;
     }
   }
 
-  // 3. Absent
-  return { policy: null, source: "absent" };
+  // 3. Absent (or all sources expired)
+  return { policy: null, source: sawExpired ? "expired" : "absent" };
 }
 
 async function fetchPolicyFromEndpoint(
