@@ -327,7 +327,11 @@ export async function orchestrate(
   // 2. Fetch the recipient's RiskPolicy unconditionally. Always surfaced in
   //    `OrchestrateResult.recipientRiskPolicy` so callers can show a
   //    diagnostic regardless of whether the gate or the pre-flight fires.
-  const recipientRiskPolicy = await resolveRP(opts.recipientEns);
+  //    Reads pin to `finalized` (TRU-76) so a publisher can't race a
+  //    swap into the read-replica propagation window after a `setText`.
+  const recipientRiskPolicy = await resolveRP(opts.recipientEns, {
+    blockTag: "finalized",
+  });
 
   // 2b. If a callerEns is provided, resolve the swapper through TRL too. Used
   //     by the RiskPolicy pre-flight to detect a tier mismatch locally before

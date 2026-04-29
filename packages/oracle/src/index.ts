@@ -9,7 +9,9 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
+  createEnsClient,
   resolve,
+  resolveAddress,
   type TrustProfile,
   type TrustTier,
 } from "@synthesis/resolver";
@@ -165,6 +167,23 @@ app.post("/attest", async (c) => {
     );
   }
 
+  // TRU-76: synthesis's parallel layer queries occasionally return
+  // `address: null` for an ENS name with a real address record (transient
+  // ENS RPC race across the layer fetches). Mirror orchestrate's
+  // single-purpose `resolveAddress` fallback before the mismatch check
+  // 400s the request — same data source, fewer parallel calls = fewer
+  // races. Has zero effect when synthesis returned a concrete address.
+  swapperProfile = await fillAddressFallback(
+    swapperProfile,
+    body.swapperEns,
+    ensRpcUrl,
+  );
+  recipientProfile = await fillAddressFallback(
+    recipientProfile,
+    body.recipientEns,
+    ensRpcUrl,
+  );
+
   if (
     !swapperProfile.address ||
     swapperProfile.address.toLowerCase() !== body.swapper.toLowerCase()
@@ -235,8 +254,13 @@ app.post("/attest", async (c) => {
   let recipientRiskPolicy: RiskPolicy | null;
   try {
     [swapperRiskPolicy, recipientRiskPolicy] = await Promise.all([
-      resolveRiskPolicy(body.swapperEns, { ensRpcUrl }),
-      resolveRiskPolicy(body.recipientEns, { ensRpcUrl }),
+      // TRU-76: pin reads to `finalized` so a publisher can't race a
+      // policy `setText` into the read-replica propagation window
+      // ahead of a swap. Costs ~12s of staleness vs eliminates the
+      // race; safe trade-off because policies are configuration, not
+      // a hot-path signal.
+      resolveRiskPolicy(body.swapperEns, { ensRpcUrl, blockTag: "finalized" }),
+      resolveRiskPolicy(body.recipientEns, { ensRpcUrl, blockTag: "finalized" }),
     ]);
   } catch (err) {
     return c.json<AttestErrorResponse>(
@@ -547,6 +571,32 @@ function encodeAttestationDigest(att: Attestation): Hex {
 // `alice.eth` but `kernel.team.alice.eth` would inherit from `team.alice.eth`,
 // not from `alice.eth`.
 // ---------------------------------------------------------------------------
+
+/**
+ * If `synthesis.resolve` returned `address: null`, try the focused
+ * `resolveAddress` lookup — synthesis's address layer races against the
+ * other parallel layer fetches; a single-purpose call sidesteps the race.
+ * Returns the original profile unchanged when the address is already set.
+ *
+ * (TRU-76 — ports the orchestrate-side fallback into the oracle Worker so
+ * a transient null doesn't 400 the request.)
+ */
+async function fillAddressFallback(
+  profile: TrustProfile,
+  ensName: string,
+  ensRpcUrl: string | undefined,
+): Promise<TrustProfile> {
+  if (profile.address) return profile;
+  try {
+    const client = createEnsClient(ensRpcUrl);
+    const recovered = await resolveAddress(client, ensName);
+    if (recovered) return { ...profile, address: recovered };
+  } catch {
+    // Swallow — the caller's mismatch check will surface the null with a
+    // useful error if the fallback also fails.
+  }
+  return profile;
+}
 
 async function inheritTierFromParent(
   rawTier: TrustTier,

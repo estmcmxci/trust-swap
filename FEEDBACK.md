@@ -388,6 +388,11 @@ The **read** path is where reality bites for production gating:
   hot path needs to pin to `finalized` blockTag (~12s steady-state cost)
   or accept that an attacker could race a freshly-published stricter
   policy by sliding their swap into the propagation window.
+  **Resolved (TRU-76)**: orchestrate + oracle now pin to `finalized` for
+  RiskPolicy reads (`tru policy show` keeps `latest` for read-after-write
+  UX). `resolveRiskPolicyWithProvenance` accepts an optional `blockTag`
+  (`"latest" | "finalized" | bigint`) plumbed down to viem's
+  `getEnsText`.
 
 - **Synthesis resolver flake.** The Trust Resolution Layer fires 5+
   parallel ENS queries per profile (Personhood, Identity, Context,
@@ -395,9 +400,11 @@ The **read** path is where reality bites for production gating:
   — most commonly `address: null` for a name that has a real address
   record, occasionally `tier=none` for a verified profile. Our local
   orchestrator has a single-purpose `resolveAddress` fallback that
-  recovers cleanly; the deployed Cloudflare Worker oracle does not yet,
-  so a single transient null returns a 400 to the client. Sub-issue
-  filed (TRU-76).
+  recovers cleanly. **Resolved (TRU-76)**: ported the same fallback
+  into the Cloudflare Worker oracle (`fillAddressFallback`) so a
+  single transient null no longer 400s the request. Tier-none flake
+  is still handled by client-side retry in
+  `scripts/test-bidirectional-policy.ts`.
 
 If Trading API ever ships **server-side ENS resolution** (per Tier 1
 above), it will face exactly these two issues and need to choose between

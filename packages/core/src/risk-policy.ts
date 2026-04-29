@@ -113,6 +113,23 @@ export interface ResolveRiskPolicyOptions {
   fetchImpl?: typeof fetch;
   /** Clock override for `validUntil` expiry checks. Returns seconds. */
   now?: () => number;
+  /**
+   * Block tag for the underlying `getEnsText` reads. (TRU-76)
+   *
+   * - `"latest"` — read the canonical chain head. Read-after-write UX:
+   *   `tru policy show` uses this so a publisher sees their own write
+   *   immediately. Vulnerable to read-replica propagation lag (Alchemy
+   *   et al. lag the canonical chain by 1–2 blocks intermittently).
+   * - `"finalized"` — read what's K-of-N finalized. ~12s steady-state
+   *   delay vs eliminates replica divergence. Default for orchestrate
+   *   + oracle paths where stale-then-true is safer than racing into
+   *   a propagation window.
+   * - bigint — pin to a specific block number (forensic / replay).
+   *
+   * Defaults to `"latest"` (preserves prior behavior). Callers
+   * enforcing policy SHOULD pass `"finalized"`.
+   */
+  blockTag?: "latest" | "finalized" | bigint;
 }
 
 export async function resolveRiskPolicy(
@@ -150,6 +167,7 @@ export async function resolveRiskPolicyWithProvenance(
   const fetchImpl = options.fetchImpl ?? fetch;
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const name = normalizeName(ensName);
+  const blockTag = options.blockTag;
 
   // Track whether any source produced a parseable-but-expired policy. If
   // every source either returns expired or nothing, we report "expired"
@@ -159,7 +177,7 @@ export async function resolveRiskPolicyWithProvenance(
   let sawExpired = false;
 
   // 1. Endpoint override — fetch from `<endpoint>/policy`
-  const endpoint = await safeReadTextRecord(client, name, ENDPOINT_KEY);
+  const endpoint = await safeReadTextRecord(client, name, ENDPOINT_KEY, blockTag);
   if (endpoint) {
     const policy = await fetchPolicyFromEndpoint(endpoint, fetchImpl);
     if (policy) {
@@ -169,7 +187,7 @@ export async function resolveRiskPolicyWithProvenance(
   }
 
   // 2. Text record — inline JSON or ipfs://CID
-  const raw = await safeReadTextRecord(client, name, POLICY_KEY);
+  const raw = await safeReadTextRecord(client, name, POLICY_KEY, blockTag);
   if (raw) {
     const isIpfs =
       raw.trim().startsWith("ipfs://") || /^(Qm|bafy)/.test(raw.trim());
@@ -236,9 +254,28 @@ async function safeReadTextRecord(
   client: PublicClient,
   name: string,
   key: string,
+  blockTag?: "latest" | "finalized" | bigint,
 ): Promise<string | null> {
+  // When the caller didn't pin a block, defer to synthesis's helper. The
+  // existing test suite mocks that import; preserving the call site keeps
+  // those mocks working without migration.
+  if (blockTag === undefined || blockTag === "latest") {
+    try {
+      return await getTextRecord(client, name, key);
+    } catch {
+      return null;
+    }
+  }
+  // Pinned reads bypass the synthesis wrapper because viem's `getEnsText`
+  // is the only path that accepts a block tag. Equivalent shape: returns
+  // string | null, swallows transport errors as null (fail-open).
   try {
-    return await getTextRecord(client, name, key);
+    const params: Parameters<PublicClient["getEnsText"]>[0] =
+      typeof blockTag === "bigint"
+        ? { name, key, blockNumber: blockTag }
+        : { name, key, blockTag };
+    const value = await client.getEnsText(params);
+    return value ?? null;
   } catch {
     return null;
   }
