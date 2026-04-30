@@ -5,6 +5,7 @@ import {
   estimateSwapUsd,
   formatJsonl,
   initialAgentState,
+  parseStatusBind,
   pickNextIntent,
   sleep,
   utcDayStart,
@@ -304,5 +305,51 @@ describe("sleep (abortable)", () => {
     const start = Date.now();
     await sleep(40);
     expect(Date.now() - start).toBeGreaterThanOrEqual(35);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("parseStatusBind", () => {
+  it("parses an IPv4 host:port", () => {
+    expect(parseStatusBind("127.0.0.1:18790")).toEqual({
+      host: "127.0.0.1",
+      port: 18790,
+    });
+  });
+
+  it("parses a bracketed IPv6 host:port", () => {
+    expect(parseStatusBind("[fd7a:115c:a1e0::1]:18790")).toEqual({
+      host: "fd7a:115c:a1e0::1",
+      port: 18790,
+    });
+  });
+
+  it("parses [::1]:port (IPv6 loopback)", () => {
+    expect(parseStatusBind("[::1]:18790")).toEqual({ host: "::1", port: 18790 });
+  });
+
+  it("rejects an empty host (`:18790`)", () => {
+    expect(() => parseStatusBind(":18790")).toThrow(/empty host/);
+  });
+
+  it("rejects an empty port (`host:`)", () => {
+    expect(() => parseStatusBind("host:")).toThrow(/empty port/);
+  });
+
+  it("rejects an out-of-range port (`host:99999`)", () => {
+    expect(() => parseStatusBind("host:99999")).toThrow(/out of range/);
+  });
+
+  it("rejects a non-numeric port (`host:abc`)", () => {
+    expect(() => parseStatusBind("host:abc")).toThrow(/non-numeric port/);
+  });
+
+  it("rejects an unterminated IPv6 bracket", () => {
+    expect(() => parseStatusBind("[::1:18790")).toThrow(/unterminated IPv6 bracket/);
+  });
+
+  it("rejects bracketed IPv6 missing the `:port` separator", () => {
+    expect(() => parseStatusBind("[::1]18790")).toThrow(/expected ":port" after "\]"/);
   });
 });

@@ -199,6 +199,13 @@ export type AgentEvent =
       iter: number;
       consecutiveFailures: number;
     }
+  | {
+      type: "agent.signer-rotated";
+      ts: string;
+      iter: number;
+      sessionKeyPath: string;
+      kernelAddress: string;
+    }
   | { type: "agent.shutdown"; ts: string; signal: string; iterations: number };
 
 export function formatJsonl(event: AgentEvent): string {
@@ -221,12 +228,55 @@ class EventRing {
   }
 }
 
-function startStatusServer(bind: string, ring: EventRing): Server {
-  const [host, portStr] = bind.split(":");
-  const port = Number(portStr);
-  if (!host || !Number.isFinite(port)) {
-    throw new Error(`invalid status bind "${bind}" — expected "host:port"`);
+/**
+ * Parse a `host:port` bind string. Accepts:
+ *   - IPv4 / hostname:  `127.0.0.1:18790`, `localhost:18790`
+ *   - Bracketed IPv6:   `[fd7a:115c:a1e0::1]:18790`, `[::1]:18790`
+ *
+ * Bare IPv6 (without brackets) is ambiguous because the address itself
+ * contains colons, so we require the bracket form — same convention Node's
+ * URL parser and most networking tools use.
+ */
+export function parseStatusBind(bind: string): { host: string; port: number } {
+  const trimmed = bind.trim();
+  let host: string;
+  let portStr: string;
+  if (trimmed.startsWith("[")) {
+    const close = trimmed.indexOf("]");
+    if (close === -1) {
+      throw new Error(`invalid status bind "${bind}" — unterminated IPv6 bracket`);
+    }
+    host = trimmed.slice(1, close);
+    if (trimmed[close + 1] !== ":") {
+      throw new Error(`invalid status bind "${bind}" — expected ":port" after "]"`);
+    }
+    portStr = trimmed.slice(close + 2);
+  } else {
+    const sep = trimmed.lastIndexOf(":");
+    if (sep === -1) {
+      throw new Error(`invalid status bind "${bind}" — expected "host:port"`);
+    }
+    host = trimmed.slice(0, sep);
+    portStr = trimmed.slice(sep + 1);
   }
+  if (host.length === 0) {
+    throw new Error(`invalid status bind "${bind}" — empty host`);
+  }
+  if (portStr.length === 0) {
+    throw new Error(`invalid status bind "${bind}" — empty port`);
+  }
+  if (!/^\d+$/.test(portStr)) {
+    throw new Error(`invalid status bind "${bind}" — non-numeric port`);
+  }
+  const port = Number(portStr);
+  if (port < 1 || port > 65535) {
+    throw new Error(`invalid status bind "${bind}" — port ${port} out of range 1..65535`);
+  }
+  return { host, port };
+}
+
+function startStatusServer(bind: string, ring: EventRing): Server {
+  const { host, port } = parseStatusBind(bind);
   const server = createServer((req, res) => {
     if (req.url === "/healthz") {
       res.writeHead(200, { "content-type": "text/plain" });
@@ -375,12 +425,14 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
   const bundlerUrl = process.env.BUNDLER_URL_BASE;
   if (!bundlerUrl) throw new Error("BUNDLER_URL_BASE not set");
 
-  const signer = await buildDaemonSigner(
+  let signer = await buildDaemonSigner(
     policy.agent.sessionKeyPath,
     policy.agent.kernelAddress,
     rpcUrl,
     bundlerUrl,
   );
+  let signerSessionKeyPath = policy.agent.sessionKeyPath;
+  let signerKernelAddress = policy.agent.kernelAddress;
 
   const ring = new EventRing(100);
   const emit = (e: AgentEvent) => {
@@ -421,6 +473,15 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
   process.once("SIGTERM", () => shutdown("SIGTERM"));
   process.once("SIGINT", () => shutdown("SIGINT"));
 
+  // Gate the inter-tick sleep so bounded runs don't pay one extra
+  // intervalSec after the final iteration (PR #10), and pass
+  // shutdownAbort.signal so SIGTERM/SIGINT cuts the sleep short instead
+  // of blocking systemctl stop for up to one full intervalSec (PR #11).
+  const sleepUntilNext = async () => {
+    if (shuttingDown || tickCount >= maxIterations) return;
+    await sleep(policy.schedule.intervalSec * 1000, shutdownAbort.signal);
+  };
+
   while (!shuttingDown && tickCount < maxIterations) {
     const tickStartedAt = Date.now();
     tickCount++;
@@ -436,8 +497,44 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
         intentId: "(policy-reload)",
         message: err instanceof Error ? err.message : String(err),
       });
-      await sleep(policy.schedule.intervalSec * 1000, shutdownAbort.signal);
+      await sleepUntilNext();
       continue;
+    }
+
+    // P1: if the operator rotated the daemon's session key or kernel address
+    //     in the policy file, rebuild the signer before this tick runs so
+    //     swaps don't keep executing under the stale account.
+    if (
+      policy.agent.sessionKeyPath !== signerSessionKeyPath ||
+      policy.agent.kernelAddress.toLowerCase() !== signerKernelAddress.toLowerCase()
+    ) {
+      try {
+        signer = await buildDaemonSigner(
+          policy.agent.sessionKeyPath,
+          policy.agent.kernelAddress,
+          rpcUrl,
+          bundlerUrl,
+        );
+        signerSessionKeyPath = policy.agent.sessionKeyPath;
+        signerKernelAddress = policy.agent.kernelAddress;
+        emit({
+          type: "agent.signer-rotated",
+          ts: new Date().toISOString(),
+          iter: tickCount,
+          sessionKeyPath: signerSessionKeyPath,
+          kernelAddress: signerKernelAddress,
+        });
+      } catch (err) {
+        emit({
+          type: "tick.error",
+          ts: new Date().toISOString(),
+          iter: tickCount,
+          intentId: "(signer-rebuild)",
+          message: err instanceof Error ? err.message : String(err),
+        });
+        await sleepUntilNext();
+        continue;
+      }
     }
 
     const now = Math.floor(Date.now() / 1000);
@@ -456,7 +553,7 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
         iter: tickCount,
         reason: constraintCheck.reason,
       });
-      await sleep(policy.schedule.intervalSec * 1000, shutdownAbort.signal);
+      await sleepUntilNext();
       continue;
     }
     if (constraintCheck.resetDailySpend) {
@@ -471,7 +568,7 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
         iter: tickCount,
         reason: "no-enabled-intent",
       });
-      await sleep(policy.schedule.intervalSec * 1000, shutdownAbort.signal);
+      await sleepUntilNext();
       continue;
     }
     state = { ...state, intentCursor: pick.nextCursor };
@@ -549,7 +646,7 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
       });
     }
 
-    await sleep(policy.schedule.intervalSec * 1000, shutdownAbort.signal);
+    await sleepUntilNext();
   }
 
   if (!shuttingDown) shutdown("max-iterations");
