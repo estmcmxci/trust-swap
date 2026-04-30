@@ -12,6 +12,7 @@ import {
   createMockOracleClient,
   createHttpOracleClient,
   createTradingClient,
+  getOutputAmount,
   loadOperatingPolicyFromDisk,
   orchestrate,
   type OperatingPolicy,
@@ -401,9 +402,14 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
   let state = initialAgentState(Math.floor(Date.now() / 1000));
   let tickCount = 0;
   let shuttingDown = false;
+  // Aborts the in-flight inter-tick sleep so SIGTERM/SIGINT can return
+  // within milliseconds rather than blocking up to one full intervalSec
+  // (which routinely exceeds systemd's TimeoutStopSec and forces a kill).
+  const shutdownAbort = new AbortController();
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    shutdownAbort.abort();
     emit({
       type: "agent.shutdown",
       ts: new Date().toISOString(),
@@ -430,7 +436,7 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
         intentId: "(policy-reload)",
         message: err instanceof Error ? err.message : String(err),
       });
-      await sleep(policy.schedule.intervalSec * 1000);
+      await sleep(policy.schedule.intervalSec * 1000, shutdownAbort.signal);
       continue;
     }
 
@@ -450,7 +456,7 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
         iter: tickCount,
         reason: constraintCheck.reason,
       });
-      await sleep(policy.schedule.intervalSec * 1000);
+      await sleep(policy.schedule.intervalSec * 1000, shutdownAbort.signal);
       continue;
     }
     if (constraintCheck.resetDailySpend) {
@@ -465,7 +471,7 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
         iter: tickCount,
         reason: "no-enabled-intent",
       });
-      await sleep(policy.schedule.intervalSec * 1000);
+      await sleep(policy.schedule.intervalSec * 1000, shutdownAbort.signal);
       continue;
     }
     state = { ...state, intentCursor: pick.nextCursor };
@@ -528,7 +534,7 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
         lastSwapAt: now,
         consecutiveFailures: success ? 0 : state.consecutiveFailures + 1,
         spentUsdToday: success
-          ? state.spentUsdToday + estimateSwapUsd(pick.intent)
+          ? state.spentUsdToday + estimateSwapUsd(pick.intent, result)
           : state.spentUsdToday,
       };
     }
@@ -543,7 +549,7 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
       });
     }
 
-    await sleep(policy.schedule.intervalSec * 1000);
+    await sleep(policy.schedule.intervalSec * 1000, shutdownAbort.signal);
   }
 
   if (!shuttingDown) shutdown("max-iterations");
@@ -551,8 +557,29 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
   await sleep(50);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+/**
+ * Abortable sleep. When `signal` aborts mid-flight (e.g. SIGTERM/SIGINT),
+ * the timer is cleared and the promise resolves immediately so the loop
+ * can drop into shutdown without waiting out a full `intervalSec`.
+ * Resolving (rather than rejecting) keeps callers from needing try/catch
+ * around every `await sleep(...)`.
+ */
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**
@@ -568,18 +595,43 @@ function hashPolicy(p: OperatingPolicy): string {
   return `len${s.length}:${(h >>> 0).toString(16)}`;
 }
 
+/** Stable USD-pegged tokens we can read 1:1 against `maxDailySpendUsd`. */
+const STABLE_USD_DECIMALS: Readonly<Record<string, number>> = {
+  USDC: 6,
+  USDT: 6,
+  DAI: 18,
+};
+
 /**
- * Best-effort USD estimate for a swap intent. USDC inputs are 1:1; other
- * inputs are deferred to the next constraint cycle (we don't pre-quote
- * to keep tick latency low). Underestimates rather than overestimates,
- * so the constraint behaves as a soft cap rather than a hard one — fine
- * for v1 since the on-chain RiskPolicy + session key already enforce
- * harder per-swap bounds.
+ * USD value of a completed swap, used to drive the `maxDailySpendUsd`
+ * counter. Two cases produce a real number:
+ *
+ *   1. Stable-coin input — the intent's `amount` is already USD.
+ *   2. Stable-coin output — read the realized output amount from
+ *      `result.quote` and scale by the stable's decimals. Covers
+ *      WETH→USDC, the shipped sample policy, so the daily cap actually
+ *      bounds non-stable inputs.
+ *
+ * Anything else (non-stable both sides) returns 0 — a known under-count.
+ * The on-chain RiskPolicy + session-key spend cap still bound each swap,
+ * so this is a soft over-cap rather than the only line of defense.
  */
-function estimateSwapUsd(intent: OperatingPolicyIntent): number {
-  const tokenIn = String(intent.tokenIn).toUpperCase();
-  if (tokenIn === "USDC" || tokenIn === "USDT" || tokenIn === "DAI") {
+export function estimateSwapUsd(
+  intent: OperatingPolicyIntent,
+  result: OrchestrateResult | null = null,
+): number {
+  const tokenInUpper = String(intent.tokenIn).toUpperCase();
+  if (tokenInUpper in STABLE_USD_DECIMALS) {
     return Number(intent.amount);
+  }
+  const tokenOutUpper = String(intent.tokenOut).toUpperCase();
+  const outDecimals = STABLE_USD_DECIMALS[tokenOutUpper];
+  if (outDecimals !== undefined && result?.quote) {
+    const outRaw = getOutputAmount(result.quote);
+    const parsed = Number(outRaw);
+    if (Number.isFinite(parsed)) {
+      return parsed / 10 ** outDecimals;
+    }
   }
   return 0;
 }
