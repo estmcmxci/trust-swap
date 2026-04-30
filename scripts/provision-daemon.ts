@@ -793,8 +793,8 @@ function phase5WriteIdentityRecord(
     sessionKeyValidUntil: p4.validUntil,
     sessionKeyValidUntilISO: new Date(p4.validUntil * 1000).toISOString(),
     routerPinned: process.env.TRUST_SWAP_ROUTER_ADDRESS,
-    keystorePath: KEYSTORE_PATH,
-    sessionKeyPath: SESSION_KEY_PATH,
+    keystorePath: KEYSTORE_PATH.replace(HOME, "~"),
+    sessionKeyPath: SESSION_KEY_PATH.replace(HOME, "~"),
     riskPolicy: {
       minCounterpartyTier: args.minTier,
       maxSizeUsd: args.maxSizeUsd,
