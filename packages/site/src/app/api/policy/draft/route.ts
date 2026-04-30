@@ -179,23 +179,26 @@ function buildCliCommand(args: {
   validUntilIso?: string;
   storage: "auto" | "ipfs";
 }) {
-  // Flag names match the `incur` parser conventions in
-  // packages/cli/src/index.ts: kebab-case shows up in --help but ONLY
-  // camelCase actually parses. Verified against the CLI's z.object
-  // schema (TRU-33 codex P1 #1 on PR #7 — was emitting `--ens` which
-  // silently fell through to the env fallback ENS_PRIMARY_NAME).
+  // `incur` (the CLI's parser) accepts both kebab-case and camelCase
+  // forms of every flag — verified empirically. We emit kebab to match
+  // conventional CLI ergonomics + the CLI's own error messages
+  // (`pass --ens-name or set ENS_PRIMARY_NAME` at
+  // packages/cli/src/commands/policy.ts:36). The original `--ens` was
+  // simply a wrong flag name (codex P1 #1 on PR #7) — it silently fell
+  // through to the ENS_PRIMARY_NAME env fallback instead of using the
+  // UI-supplied name.
   const parts = ["tru", "policy", "publish"];
-  if (args.ensName) parts.push("--ensName", shellQuote(args.ensName));
-  parts.push("--minTier", args.minTier);
-  parts.push("--maxSize", String(args.maxSizeUsd));
+  if (args.ensName) parts.push("--ens-name", shellQuote(args.ensName));
+  parts.push("--min-tier", args.minTier);
+  parts.push("--max-size", String(args.maxSizeUsd));
   // The CLI rejects empty token lists; the route's validation layer
   // already errors out before we'd build a command for an empty list,
   // but guard here too so a bug elsewhere can't ship a bad command.
   if (args.tokens.length > 0)
     parts.push("--tokens", shellQuote(args.tokens.join(",")));
-  if (args.requireManifestSig) parts.push("--requireManifestSig");
+  if (args.requireManifestSig) parts.push("--require-manifest-sig");
   if (args.validUntilIso)
-    parts.push("--validUntil", shellQuote(args.validUntilIso));
+    parts.push("--valid-until", shellQuote(args.validUntilIso));
   if (args.storage === "ipfs") parts.push("--storage", "ipfs");
   return parts.join(" ");
 }
