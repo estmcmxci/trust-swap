@@ -77,10 +77,7 @@ const AmountStringSchema = z
 
 const IsoDateSchema = z
   .string()
-  .refine(
-    (s) => !Number.isNaN(Date.parse(s)),
-    "must be a valid ISO-8601 timestamp",
-  );
+  .datetime({ offset: true, message: "must be a valid ISO-8601 timestamp" });
 
 // ---------------------------------------------------------------------------
 

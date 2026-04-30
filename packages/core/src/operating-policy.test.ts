@@ -86,6 +86,19 @@ describe("parseOperatingPolicy", () => {
     expect(() => parseOperatingPolicy(p)).toThrow(/endAt/);
   });
 
+  it("rejects non-ISO-8601 startAt strings (e.g. 2026/05/01, RFC-2822)", () => {
+    for (const bad of [
+      "2026/05/01",
+      "Fri, 01 May 2026 00:00:00 GMT",
+      "2026-05-01",
+      "May 1, 2026",
+    ]) {
+      const p = validPolicy();
+      p.schedule.startAt = bad;
+      expect(() => parseOperatingPolicy(p), `should reject ${bad}`).toThrow();
+    }
+  });
+
   it("rejects haltOnConsecutiveFailures = 0 (must be > 0 to ever halt)", () => {
     const p = validPolicy();
     p.constraints.haltOnConsecutiveFailures = 0;
