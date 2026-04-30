@@ -72,6 +72,21 @@ export async function POST(req: Request) {
     resolvedTokens.push(candidate);
   }
 
+  // Codex P1 (PR #7): the RiskPolicy schema accepts an empty
+  // acceptedTokens array (semantically "any token"), but
+  // `tru policy publish` rejects an empty `--tokens` flag with
+  //   "--tokens must list at least one symbol or 0x address"
+  // (packages/cli/src/commands/policy.ts:55). Surface this as a
+  // validation error so the editor never reports a "valid" draft that
+  // produces an unrunnable copy-paste command. Resolving the upstream
+  // disconnect lives in a separate ticket — for now the editor enforces
+  // the stricter CLI rule.
+  if (resolvedTokens.length === 0) {
+    errors.push(
+      "acceptedTokens: must include at least one token (CLI requires --tokens; the on-chain schema allows empty but the publisher does not)",
+    );
+  }
+
   // ValidUntil → unix seconds.
   let validUntilSeconds: number | undefined;
   if (body.validUntil) {
@@ -164,10 +179,18 @@ function buildCliCommand(args: {
   validUntilIso?: string;
   storage: "auto" | "ipfs";
 }) {
+  // Flag names match the `incur` parser conventions in
+  // packages/cli/src/index.ts: kebab-case shows up in --help but ONLY
+  // camelCase actually parses. Verified against the CLI's z.object
+  // schema (TRU-33 codex P1 #1 on PR #7 — was emitting `--ens` which
+  // silently fell through to the env fallback ENS_PRIMARY_NAME).
   const parts = ["tru", "policy", "publish"];
-  if (args.ensName) parts.push("--ens", shellQuote(args.ensName));
-  parts.push("--min-tier", args.minTier);
-  parts.push("--max-size", String(args.maxSizeUsd));
+  if (args.ensName) parts.push("--ensName", shellQuote(args.ensName));
+  parts.push("--minTier", args.minTier);
+  parts.push("--maxSize", String(args.maxSizeUsd));
+  // The CLI rejects empty token lists; the route's validation layer
+  // already errors out before we'd build a command for an empty list,
+  // but guard here too so a bug elsewhere can't ship a bad command.
   if (args.tokens.length > 0)
     parts.push("--tokens", shellQuote(args.tokens.join(",")));
   if (args.requireManifestSig) parts.push("--requireManifestSig");

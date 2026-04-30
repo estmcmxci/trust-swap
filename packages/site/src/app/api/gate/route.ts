@@ -134,12 +134,22 @@ export async function POST(req: Request) {
   //    deny in defaultSwapPolicy; everything else passes the floor.
   const decision = gate(recipientProfile, defaultSwapPolicy, body.callerEns);
 
-  // 4. Layer RiskPolicy static checks on top of the gate result.
+  // 4. Layer halt logic on top of the gate result. Order matters:
+  //    address-unresolved is checked even when the gate allows, because
+  //    a recipient with a passing tier but no resolvable address record
+  //    can't actually receive a swap. Mirrors the orchestrate path's
+  //    `recipient-unresolved` halt (TRU-34 codex P1 #3 on PR #7).
   let haltedAt: string | undefined;
   let onboardingHint: string | undefined;
   if (!decision.allow) {
     haltedAt = "gate-deny";
     onboardingHint = onboardingHintFor(recipientProfile.trustScore);
+  } else if (
+    !recipientProfile.address ||
+    !isAddress(recipientProfile.address)
+  ) {
+    haltedAt = "recipient-unresolved";
+    onboardingHint = `${body.recipientEns} has no resolvable address record. Set the ENS \`addr\` record before the swap can settle.`;
   } else if (riskPolicyResolution.policy) {
     const p = riskPolicyResolution.policy;
     const offered = body.tokenIn.toLowerCase();
