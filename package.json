@@ -18,6 +18,7 @@
     "kernel:issue": "tsx --env-file=.env scripts/issue-kernel-account.ts",
     "kernel:withdraw": "tsx --env-file=.env scripts/kernel-withdraw.ts",
     "session-key:issue": "tsx --env-file=.env scripts/issue-session-key.ts",
+    "provision:daemon": "tsx --env-file=.env scripts/provision-daemon.ts",
     "smoke:uniswap": "tsx --env-file=.env scripts/smoke-uniswap.ts",
     "smoke:bundler": "tsx --env-file=.env scripts/smoke-bundler.ts",
     "e2e:phase1": "scripts/e2e-phase1.sh",
