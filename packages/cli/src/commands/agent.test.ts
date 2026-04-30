@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { OperatingPolicy } from "@trust-swap/core";
+import type { ClassicQuote, OperatingPolicy, OrchestrateResult } from "@trust-swap/core";
 import {
   applyConstraints,
+  estimateSwapUsd,
   formatJsonl,
   initialAgentState,
   parseStatusBind,
   pickNextIntent,
+  sleep,
   utcDayStart,
 } from "./agent.js";
 
@@ -209,6 +211,100 @@ describe("formatJsonl", () => {
       iterations: "unbounded" as const,
     };
     expect(JSON.parse(formatJsonl(event))).toEqual(event);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("estimateSwapUsd", () => {
+  const baseIntent = basePolicy().intents[0]!;
+
+  function classicQuoteResult(outputAmount: string): OrchestrateResult {
+    const quote: ClassicQuote = {
+      routing: "CLASSIC",
+      quote: {
+        input: {
+          token: "0x4200000000000000000000000000000000000006",
+          amount: "1000000000000000000",
+        },
+        output: {
+          token: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          amount: outputAmount,
+        },
+        slippage: 50,
+        gasFee: "0",
+        gasFeeUSD: "0",
+        gasUseEstimate: "0",
+        route: [],
+      },
+      permitData: null,
+    };
+    return {
+      decision: { allow: true } as OrchestrateResult["decision"],
+      recipientProfile: {} as OrchestrateResult["recipientProfile"],
+      recipientRiskPolicy: null,
+      quote,
+    };
+  }
+
+  it("returns intent.amount when tokenIn is a stablecoin (no result needed)", () => {
+    expect(estimateSwapUsd({ ...baseIntent, tokenIn: "USDC", amount: "10" })).toBe(10);
+    expect(estimateSwapUsd({ ...baseIntent, tokenIn: "DAI", amount: "5" })).toBe(5);
+    expect(estimateSwapUsd({ ...baseIntent, tokenIn: "USDT", amount: "2.5" })).toBe(2.5);
+  });
+
+  it("uses the classic quote's stable-output amount for non-stable inputs", () => {
+    // 3,500 USDC out (6 decimals) for a WETH→USDC swap → $3500
+    const result = classicQuoteResult("3500000000");
+    const usd = estimateSwapUsd(
+      { ...baseIntent, tokenIn: "WETH", tokenOut: "USDC", amount: "1" },
+      result,
+    );
+    expect(usd).toBe(3500);
+  });
+
+  it("returns 0 when neither side is a stablecoin", () => {
+    const result = classicQuoteResult("12345");
+    const usd = estimateSwapUsd(
+      { ...baseIntent, tokenIn: "WETH", tokenOut: "WBTC", amount: "1" },
+      result,
+    );
+    expect(usd).toBe(0);
+  });
+
+  it("returns 0 when tokenOut is a stablecoin but result is missing", () => {
+    const usd = estimateSwapUsd(
+      { ...baseIntent, tokenIn: "WETH", tokenOut: "USDC", amount: "1" },
+      null,
+    );
+    expect(usd).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("sleep (abortable)", () => {
+  it("resolves immediately when the signal is already aborted", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const start = Date.now();
+    await sleep(60_000, ac.signal);
+    expect(Date.now() - start).toBeLessThan(50);
+  });
+
+  it("resolves promptly when the signal aborts mid-sleep", async () => {
+    const ac = new AbortController();
+    const start = Date.now();
+    const p = sleep(60_000, ac.signal);
+    setTimeout(() => ac.abort(), 5);
+    await p;
+    expect(Date.now() - start).toBeLessThan(100);
+  });
+
+  it("waits the full duration when no signal is supplied", async () => {
+    const start = Date.now();
+    await sleep(40);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(35);
   });
 });
 
