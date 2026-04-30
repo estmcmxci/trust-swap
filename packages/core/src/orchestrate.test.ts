@@ -357,6 +357,94 @@ describe("orchestrate — TRU-65 RiskPolicy pre-flight", () => {
     expect(result.haltedAt).toBeUndefined();
   });
 
+  it("retries gate-deny once with cache-bypass; uses fresh profile if it now allows", async () => {
+    // codex P2 #2 PR #6 — stale cached pre-upgrade tier scenario. First
+    // resolve returns tier=none (gate denies). Retry returns verified
+    // (gate allows). Orchestrate should fall through to oracle attest
+    // with the fresh profile, NOT halt at gate-deny.
+    const trading = makeTradingClient();
+    const oracle = makeOracleSpy();
+    const staleProfile = makeProfile("bob.eth", "none", RECIPIENT_ADDR);
+    const freshProfile = makeProfile("bob.eth", "verified", RECIPIENT_ADDR);
+    const swapper = makeProfile("alice.eth", "verified", SWAPPER_ADDR);
+    const resolveTrustProfile = vi.fn(
+      async (ens: string, _o?: ResolveOptions) => {
+        if (ens === "alice.eth") return swapper;
+        if (ens !== "bob.eth") throw new Error(`unexpected ens ${ens}`);
+        // First two calls (recipient + retry) return stale then fresh.
+        // resolveWithSubnameInheritance does NOT recurse for tier=none
+        // when label count < 3, so each top-level call is one resolveTP
+        // call (subnames would be 2 deep — not bob.eth).
+        return resolveTrustProfile.mock.calls.filter(
+          (c) => c[0] === "bob.eth",
+        ).length === 1
+          ? staleProfile
+          : freshProfile;
+      },
+    );
+
+    const result = await orchestrate({
+      recipientEns: "bob.eth",
+      callerEns: "alice.eth",
+      tokenIn: USDC,
+      tokenOut: WETH,
+      amount: 1_000_000n,
+      signer: makeSigner(),
+      tradingClient: trading.client,
+      oracleClient: oracle.client,
+      resolveTrustProfile,
+      resolveRiskPolicyFn: vi.fn(async () => null),
+      dryRun: true,
+    });
+
+    expect(result.haltedAt).toBeUndefined();
+    expect(result.attestation).toBeDefined();
+    expect(result.recipientProfile.trustScore).toBe("verified");
+    expect(oracle.calls).toBe(1);
+    // Recipient resolved twice (initial + retry); swapper once.
+    expect(resolveTrustProfile).toHaveBeenCalledTimes(3);
+  });
+
+  it("retried gate-deny that returns flake-shape keeps the cached deny", async () => {
+    // Defense-in-depth for the retry: if the fresh resolve produces a
+    // flake (tier=none, address null), do NOT replace the original
+    // cached read with synthesis garbage. Halt at gate-deny.
+    const trading = makeTradingClient();
+    const oracle = makeOracleSpy();
+    const staleProfile = makeProfile("bob.eth", "none", RECIPIENT_ADDR);
+    const flakeProfile = makeProfile("bob.eth", "none", RECIPIENT_ADDR);
+    const swapper = makeProfile("alice.eth", "verified", SWAPPER_ADDR);
+    const resolveTrustProfile = vi.fn(
+      async (ens: string, _o?: ResolveOptions) => {
+        if (ens === "alice.eth") return swapper;
+        if (ens !== "bob.eth") throw new Error(`unexpected ens ${ens}`);
+        // Both bob.eth calls return tier=none. Retry doesn't help.
+        return resolveTrustProfile.mock.calls.filter(
+          (c) => c[0] === "bob.eth",
+        ).length === 1
+          ? staleProfile
+          : flakeProfile;
+      },
+    );
+
+    const result = await orchestrate({
+      recipientEns: "bob.eth",
+      callerEns: "alice.eth",
+      tokenIn: USDC,
+      tokenOut: WETH,
+      amount: 1_000_000n,
+      signer: makeSigner(),
+      tradingClient: trading.client,
+      oracleClient: oracle.client,
+      resolveTrustProfile,
+      resolveRiskPolicyFn: vi.fn(async () => null),
+      dryRun: true,
+    });
+
+    expect(result.haltedAt).toBe("gate-deny");
+    expect(oracle.calls).toBe(0);
+  });
+
   it("skips tier check when callerEns is omitted (oracle still authoritative)", async () => {
     const { result, oracle } = await runScenario({
       swapperTier: "registered",

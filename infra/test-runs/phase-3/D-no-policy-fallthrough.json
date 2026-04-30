@@ -23,14 +23,14 @@
         "recipient": "0xeb0ABB367540f90B57b3d5719fd2b9c740a15022",
         "swapperTier": "full",
         "recipientTier": "full",
-        "expiresAt": 1777497864,
-        "nonce": 1317844349,
+        "expiresAt": 1777513964,
+        "nonce": 3146590312,
         "calldataHash": "0xabababababababababababababababababababababababababababababababab"
       },
-      "signature": "0x905d01996c6cf5a921ffa6b916fe895f505f23c00730543fae92d315224140556f3aa150b6cb09e6b0dc6e319b78626a236cb8b4fade94d0dd30ae315a3757601c"
+      "signature": "0x04b8ef2aa1aa1fa8cbdf8b0750835df45be42d5b0e9bc3c10f792c660d35ed973eed25ec486e34f9445c69c17c071f92a5697e7d62acfa919eb1e1d54c48f2901b"
     }
   },
-  "durationMs": 2415,
-  "recordedAt": "2026-04-29T21:19:23.952Z",
+  "durationMs": 1161,
+  "recordedAt": "2026-04-30T01:47:44.856Z",
   "passed": true
 }
