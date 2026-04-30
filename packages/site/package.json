@@ -1,18 +1,32 @@
 {
   "name": "@trust-swap/site",
   "version": "0.0.0",
-  "description": "TrustSwap site — /swap, /agent",
+  "description": "TrustSwap site — /swap, /policy, /agent (Phase 4)",
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "echo 'Phase 3 scaffolds Next.js. Stub for now.'",
-    "build": "echo 'Phase 3 scaffolds Next.js build. Stub for now.'",
+    "dev": "next dev --port 3030",
+    "build": "next build",
+    "start": "next start --port 3030",
     "lint": "biome lint --write ."
   },
   "dependencies": {
-    "@trust-swap/core": "workspace:*"
+    "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
+    "@trust-swap/core": "workspace:*",
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "viem": "^2.33.3",
+    "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.9.4"
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.5.4"
   }
 }

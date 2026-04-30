@@ -670,7 +670,7 @@ export async function orchestrate(
 // when they exist on the parent ENS.
 // ---------------------------------------------------------------------------
 
-async function resolveWithSubnameInheritance(
+export async function resolveWithSubnameInheritance(
   ensName: string,
   resolveOptions: ResolveOptions | undefined,
   resolveTP: (

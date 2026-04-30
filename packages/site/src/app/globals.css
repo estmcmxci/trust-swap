@@ -1,0 +1,135 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+ * TrustSwap design tokens
+ *
+ * Light-first, financial-paper warm bg with deep ink. CSS variables expose
+ * the brand scale to runtime — used by the tier ladder visual + a couple of
+ * gradients that don't fit cleanly inside Tailwind's color system.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  color-scheme: light;
+
+  --paper: #fbf8f1;
+  --paper-subtle: #f5f1e6;
+  --ink: #0b1226;
+  --ink-soft: #1b2440;
+  --ink-muted: #56627a;
+  --ink-faint: #8f99ae;
+
+  --brand: #1e40af;
+  --brand-soft: #3f62b8;
+  --brand-deep: #102868;
+  --gold: #c7942f;
+  --gold-soft: #d6a736;
+
+  --tier-none: #9aa1b0;
+  --tier-registered: #7387a8;
+  --tier-discoverable: #3f66c8;
+  --tier-verified: #1f9e6e;
+  --tier-full: #c7942f;
+
+  --hairline: rgba(11, 18, 38, 0.08);
+  --hairline-strong: rgba(11, 18, 38, 0.16);
+}
+
+html {
+  font-feature-settings: "ss01", "cv11", "cv09";
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  letter-spacing: -0.011em;
+  background-image:
+    /* faint diagonal grid — financial graph paper */
+    linear-gradient(
+      135deg,
+      rgba(11, 18, 38, 0.025) 0%,
+      rgba(11, 18, 38, 0) 60%
+    ),
+    /* subtle radial brand glow in upper-left */
+    radial-gradient(
+      900px 600px at -10% -10%,
+      rgba(30, 64, 175, 0.06),
+      transparent 60%
+    ),
+    /* warm gold whisper from lower-right */
+    radial-gradient(
+      700px 500px at 110% 110%,
+      rgba(199, 148, 47, 0.05),
+      transparent 60%
+    );
+  background-attachment: fixed;
+}
+
+::selection {
+  background-color: rgba(30, 64, 175, 0.18);
+  color: var(--ink);
+}
+
+/* Hairline divider helper */
+.hairline {
+  border-color: var(--hairline);
+}
+
+/* Mono numerals — addresses & amounts get tabular figures */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Stagger helper for entry animations */
+.stagger > * {
+  opacity: 0;
+  animation: fade-up 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.stagger > *:nth-child(1) {
+  animation-delay: 0ms;
+}
+.stagger > *:nth-child(2) {
+  animation-delay: 80ms;
+}
+.stagger > *:nth-child(3) {
+  animation-delay: 160ms;
+}
+.stagger > *:nth-child(4) {
+  animation-delay: 240ms;
+}
+.stagger > *:nth-child(5) {
+  animation-delay: 320ms;
+}
+.stagger > *:nth-child(6) {
+  animation-delay: 400ms;
+}
+.stagger > *:nth-child(7) {
+  animation-delay: 480ms;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Reduced motion — kill nonessential animation */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
