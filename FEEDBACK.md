@@ -402,9 +402,28 @@ The **read** path is where reality bites for production gating:
   orchestrator has a single-purpose `resolveAddress` fallback that
   recovers cleanly. **Resolved (TRU-76)**: ported the same fallback
   into the Cloudflare Worker oracle (`fillAddressFallback`) so a
-  single transient null no longer 400s the request. Tier-none flake
-  is still handled by client-side retry in
-  `scripts/test-bidirectional-policy.ts`.
+  single transient null no longer 400s the request.
+
+  **Mitigated further (TRU-75)** by a 5-min in-process cache
+  (`packages/core/src/resolver-cache.ts`) layered over `resolve()` for
+  the orchestrate side. Successful resolutions short-circuit subsequent
+  daemon-loop iterations; flake-shaped results (tier=none, address
+  null) are explicitly *not* cached so a bad first read can't pin an
+  ENS into a degraded read for 5 min. Doesn't fix the root cause
+  (upstream parallel-layer race in synthesis), but takes a 30%
+  per-call flake rate down to roughly the cache miss rate — closer to
+  a few-percent in steady state.
+
+  **Operational find (worth its own callout to RPC-using integrators)**:
+  the deployed oracle Worker had no `ETH_RPC_URL` configured,
+  silently falling back to `eth.drpc.org`. Combined with synthesis's
+  parallel-layer race, this produced a noisy ~1–2 retries per
+  4-scenario regression run. Setting `ETH_RPC_URL` to Alchemy via
+  `wrangler secret put` collapsed the retry count to zero
+  immediately. The wrangler.toml comment block now lists every
+  required secret; if you build a CF Worker that calls
+  `@synthesis/resolver`, set a paid RPC at the Worker boundary
+  before anything else.
 
 If Trading API ever ships **server-side ENS resolution** (per Tier 1
 above), it will face exactly these two issues and need to choose between

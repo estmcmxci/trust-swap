@@ -19,11 +19,11 @@
   "response": {
     "status": 403,
     "body": {
-      "error": "recipient RiskPolicy.maxAcceptedSize=100000000 exceeded by amount 200000000",
-      "hint": "resubmit with amount <= 100000000"
+      "error": "recipient RiskPolicy.maxAcceptedSize=100000000 (USD base units) exceeded by valued amount 200000000",
+      "hint": "resubmit with amount valued <= $100.00"
     }
   },
-  "durationMs": 5700,
-  "recordedAt": "2026-04-29T21:19:06.674Z",
+  "durationMs": 2164,
+  "recordedAt": "2026-04-30T01:47:42.005Z",
   "passed": true
 }

@@ -32,6 +32,13 @@ export {
 } from "./policy.js";
 
 export {
+  cachedResolveTrustProfile,
+  clearResolverCache,
+  getResolverCacheSnapshot,
+  type CachedResolveOptions,
+} from "./resolver-cache.js";
+
+export {
   RiskPolicySchema,
   RiskPolicyError,
   parseRiskPolicy,

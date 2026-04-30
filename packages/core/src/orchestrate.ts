@@ -8,7 +8,6 @@ import {
 import {
   createEnsClient,
   gate,
-  resolve,
   resolveAddress,
   type GateDecision,
   type ResolveOptions,
@@ -16,6 +15,7 @@ import {
   type TrustPolicy,
   type TrustProfile,
 } from "@synthesis/resolver";
+import { cachedResolveTrustProfile } from "./resolver-cache.js";
 import type { TrustTier } from "@synthesis/resolver";
 import type {
   AttestRequest,
@@ -297,7 +297,11 @@ export async function orchestrate(
   const chainId = opts.chainId ?? 8453;
   const policy = opts.policy ?? defaultSwapPolicy;
   const routerAddress = opts.routerAddress ?? PLACEHOLDER_ROUTER_ADDRESS;
-  const resolveTP = opts.resolveTrustProfile ?? resolve;
+  // TRU-75 mitigation: cache successful resolutions per-process so a
+  // daemon poll loop or A2A negotiation doesn't re-eat synthesis's
+  // 30%-flake parallel-layer race for every iteration. Tests can
+  // inject `resolveTrustProfile` directly to bypass the cache.
+  const resolveTP = opts.resolveTrustProfile ?? cachedResolveTrustProfile;
   const resolveRP = opts.resolveRiskPolicyFn ?? resolveRiskPolicy;
   const dryRun = opts.dryRun ?? false; // Phase 2 default: broadcast (router live)
 

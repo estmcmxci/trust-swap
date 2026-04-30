@@ -6,8 +6,37 @@ compatibility_date = "2026-04-01"
 # the polyfill behind this flag.
 compatibility_flags = ["nodejs_compat"]
 
-# Phase 0 deployed a placeholder Worker at this name from infra/oracle/.
-# Phase 2 will run `pnpm --filter @trust-swap/oracle deploy` from this dir to
-# replace the placeholder with the real handler. Secrets (ORACLE_PRIVATE_KEY,
-# ORACLE_PUBKEY_ADDRESS) are already attached to the Worker via `wrangler
-# secret put` and persist across deploys.
+# Required wrangler secrets (set via `wrangler secret put <NAME>` from this
+# directory; they persist across deploys):
+#
+#   ORACLE_PRIVATE_KEY       — ECDSA key the Worker signs attestations with;
+#                              must match the address in ORACLE_PUBKEY_ADDRESS
+#                              and the one baked into TrustSwapRouter.
+#   ORACLE_PUBKEY_ADDRESS    — sanity check on the signing key; if the
+#                              private-key-derived address ≠ this, the Worker
+#                              500s with a misconfiguration error.
+#   ETH_RPC_URL              — Ethereum mainnet RPC for ENS reads. WITHOUT
+#                              this set the Worker falls back to
+#                              `eth.drpc.org`, which heavily contributes to
+#                              TRU-75 synthesis flakiness from the CF Worker
+#                              IP. Strongly prefer Alchemy or another paid
+#                              RPC. (Discovered the hard way during
+#                              post-PR-#5 deploy verification — `pnpm
+#                              test:phase-3` case C started passing-as-no-
+#                              policy until ETH_RPC_URL was set.)
+#   UNISWAP_API_KEY          — Trading API key for TRU-77 USD-valuation
+#                              quotes (RiskPolicy.maxAcceptedSize check).
+#                              When unset, size checks no-op with an
+#                              `attest.size-check-skipped` audit log; the
+#                              tier/token/router-floor enforcement still
+#                              binds, so the Worker is safe-but-toothless
+#                              on size in that mode.
+#
+# Optional vars (env, not secret — can be set in this file or via secrets):
+#
+#   UNISWAP_TRADING_API_URL  — override Trading API base URL. Defaults to
+#                              `https://trade-api.gateway.uniswap.org/v1`.
+#   ATTEST_CHAIN_ID          — chain for valuation quotes. Defaults to 8453
+#                              (Base mainnet).
+#
+# Inspect with `wrangler secret list` from this directory.
