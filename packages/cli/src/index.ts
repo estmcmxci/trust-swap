@@ -17,6 +17,7 @@ config({ path: ".env.local", override: true });
 import { Cli, z } from "incur";
 import { runSwap } from "./commands/swap.js";
 import { runPolicyPublish, runPolicyShow } from "./commands/policy.js";
+import { runAgentRun } from "./commands/agent.js";
 
 const cli = Cli.create("tru", {
   version: "0.0.0",
@@ -236,6 +237,57 @@ policy.command("show", {
 });
 
 cli.command(policy);
+
+// ---------------------------------------------------------------------------
+// `tru agent run` (Phase 5 — TRU-38)
+// ---------------------------------------------------------------------------
+
+const agent = Cli.create("agent", {
+  description: "Run the autonomous-daemon agent loop driven by an Operating Policy file.",
+});
+
+agent.command("run", {
+  description:
+    "Tick an autonomous loop reading the Operating Policy file. Each tick: re-read policy → pick next due intent → orchestrate → emit JSONL. Constraints (maxDailySpendUsd, minSecondsBetweenSwaps, haltOnConsecutiveFailures) are enforced pre-tick. Status endpoint exposes the last 100 events as JSON.",
+  options: z.object({
+    policy: z
+      .string()
+      .optional()
+      .describe("Path to the Operating Policy JSON file. Default: /srv/trust-swap/policy.json"),
+    signer: z
+      .enum(["namera"])
+      .optional()
+      .describe("Signer kind. Only `namera` is supported — agent loops use the daemon kernel + session key."),
+    maxIterations: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("Exit after N ticks. Useful for `--max-iterations 2` smoke tests; omit for an unbounded loop."),
+    statusBind: z
+      .string()
+      .optional()
+      .describe("Status endpoint bind address. Default: 127.0.0.1:18790 (override with TRU_AGENT_STATUS_BIND for Tailscale-only droplet binding)."),
+  }),
+  alias: { policy: "p", maxIterations: "n" },
+  examples: [
+    {
+      options: { policy: "infra/droplet/sample-operating-policy.json", maxIterations: 2 },
+      description: "Local smoke — 2 ticks against the deployed router using the daemon session key",
+    },
+  ],
+  async run({ options }) {
+    await runAgentRun({
+      policy: options.policy ?? "/srv/trust-swap/policy.json",
+      signer: options.signer,
+      maxIterations: options.maxIterations,
+      statusBind: options.statusBind,
+    });
+    return { ok: true };
+  },
+});
+
+cli.command(agent);
 
 cli.serve();
 
