@@ -285,7 +285,21 @@ interface Phase1Output {
 async function phase1IssueOwnerAndKernel(args: Args): Promise<Phase1Output> {
   console.log("\n— Phase 1: daemon owner key + kernel address —");
 
-  if (existsSync(KEYSTORE_PATH) && existsSync(KERNEL_PUB_PATH) && !args.force) {
+  const hasKeystore = existsSync(KEYSTORE_PATH);
+  const hasPub = existsSync(KERNEL_PUB_PATH);
+
+  // Partial Phase 1 state — the script crashed between writing the keystore
+  // and the public record (or one was deleted). We can't safely re-derive
+  // the missing half, and silently overwriting the keystore would orphan
+  // any kernel funds tied to the original owner key. Hard-fail with
+  // recovery instructions instead.
+  if (hasKeystore !== hasPub) {
+    throw new Error(
+      `partial Phase 1 state — keystore=${hasKeystore} pub=${hasPub}. Delete both files (${KEYSTORE_PATH}, ${KERNEL_PUB_PATH}) manually before re-running. Refusing to overwrite: a fresh owner key would orphan any funds sent to the original kernel.`,
+    );
+  }
+
+  if (hasKeystore && hasPub && !args.force) {
     const pub = JSON.parse(readFileSync(KERNEL_PUB_PATH, "utf-8"));
     console.log(`  reusing existing keystore at ${KEYSTORE_PATH}`);
     console.log(`  daemon owner address:    ${pub.ownerAddress}`);
@@ -296,7 +310,7 @@ async function phase1IssueOwnerAndKernel(args: Args): Promise<Phase1Output> {
     };
   }
 
-  if (existsSync(KEYSTORE_PATH) && args.force) {
+  if (hasKeystore && args.force) {
     throw new Error(
       `--force passed but ${KEYSTORE_PATH} exists. Refusing to clobber automatically — delete it manually first.`,
     );
@@ -615,13 +629,21 @@ interface Phase4Output {
 async function phase4IssueSessionKey(args: Args, p1: Phase1Output): Promise<Phase4Output> {
   console.log("\n— Phase 4: issue daemon session key —");
 
+  // Read router env early so the reuse gate can pin against it. The gate
+  // must reject any cached key whose `routerPinned` doesn't match the
+  // currently-configured router; otherwise a redeploy + env update would
+  // silently leave the daemon running with a key bound to the dead router.
+  const envRouterAddress = process.env.TRUST_SWAP_ROUTER_ADDRESS;
+
   if (existsSync(SESSION_KEY_PATH) && !args.force) {
     const existing = JSON.parse(readFileSync(SESSION_KEY_PATH, "utf-8"));
     const now = Math.floor(Date.now() / 1000);
-    if (
-      existing.kernelAccount?.toLowerCase() === p1.daemonKernelAddress.toLowerCase() &&
-      existing.validUntil > now
-    ) {
+    const sameKernel =
+      existing.kernelAccount?.toLowerCase() === p1.daemonKernelAddress.toLowerCase();
+    const sameRouter =
+      typeof envRouterAddress === "string" &&
+      existing.routerPinned?.toLowerCase() === envRouterAddress.toLowerCase();
+    if (sameKernel && sameRouter && existing.validUntil > now) {
       console.log(`  reusing valid session key at ${SESSION_KEY_PATH}`);
       console.log(`  session signer:   ${existing.sessionSigner}`);
       console.log(`  validUntil:       ${new Date(existing.validUntil * 1000).toISOString()}`);
@@ -629,6 +651,11 @@ async function phase4IssueSessionKey(args: Args, p1: Phase1Output): Promise<Phas
         sessionSignerAddress: existing.sessionSigner as Address,
         validUntil: existing.validUntil,
       };
+    }
+    if (sameKernel && !sameRouter) {
+      console.log(
+        `  existing session key pinned to ${existing.routerPinned} ≠ ${envRouterAddress} — re-issuing`,
+      );
     }
   }
 
