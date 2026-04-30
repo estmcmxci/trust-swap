@@ -322,7 +322,7 @@ export async function orchestrate(
   //    the parent's profile — same semantics as the oracle. Subname
   //    creation is gated by parent ownership on ENS, so an existing
   //    subname is implicit delegation from the parent.
-  const recipientProfile = await resolveWithSubnameInheritance(
+  let recipientProfile = await resolveWithSubnameInheritance(
     opts.recipientEns,
     opts.resolveOptions,
     resolveTP,
@@ -357,16 +357,49 @@ export async function orchestrate(
   // 3. Local pre-flight `gate()` — produces an early diagnostic. The oracle
   //    is the on-chain authority, but stopping here saves a Trading API
   //    round trip when the gate would deny anyway.
-  const decision = gate(recipientProfile, policy, opts.callerEns);
+  //
+  //    On deny we do ONE cache-bypass retry against the resolver before
+  //    finalizing the negative outcome. This defangs the "stale cached
+  //    pre-upgrade tier" scenario flagged by codex P2 #2 on PR #6: a
+  //    daemon that cached a recipient at `discoverable` won't keep
+  //    denying for the full TTL window after the recipient registers a
+  //    higher tier. The retry only overrides the cached read if the
+  //    fresh result is non-flake-shape — otherwise we'd be replacing a
+  //    real read with synthesis race garbage.
+  let decision = gate(recipientProfile, policy, opts.callerEns);
   if (!decision.allow) {
-    return {
-      decision,
-      recipientProfile,
-      recipientRiskPolicy,
-      swapperProfile,
-      onboardingHint: onboardingHintFor(decision),
-      haltedAt: "gate-deny",
-    };
+    try {
+      const freshProfile = await resolveWithSubnameInheritance(
+        opts.recipientEns,
+        // bypassCache is consumed by `cachedResolveTrustProfile` (the
+        // production default). Test mocks ignore the field harmlessly;
+        // they're called once more on deny but produce the same
+        // result, so the retry is a no-op in that path.
+        {
+          ...(opts.resolveOptions ?? {}),
+          bypassCache: true,
+        } as ResolveOptions,
+        resolveTP,
+      );
+      const freshIsFlake =
+        freshProfile.trustScore === "none" || !freshProfile.address;
+      if (!freshIsFlake) {
+        recipientProfile = freshProfile;
+        decision = gate(freshProfile, policy, opts.callerEns);
+      }
+    } catch {
+      // Retry failed (network glitch, etc.) — keep the cached deny.
+    }
+    if (!decision.allow) {
+      return {
+        decision,
+        recipientProfile,
+        recipientRiskPolicy,
+        swapperProfile,
+        onboardingHint: onboardingHintFor(decision),
+        haltedAt: "gate-deny",
+      };
+    }
   }
 
   if (!recipientProfile.address || !isAddress(recipientProfile.address)) {

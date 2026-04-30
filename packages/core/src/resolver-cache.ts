@@ -70,8 +70,12 @@ export async function cachedResolveTrustProfile(
 
   if (!options.bypassCache) {
     const hit = cache.get(key);
-    if (hit && hit.expiresAt > now()) {
-      return hit.profile;
+    if (hit) {
+      if (hit.expiresAt > now()) return hit.profile;
+      // Stale entry — drop it on the floor before re-resolving so a
+      // long-lived process resolving many distinct ENS names doesn't
+      // accumulate dead Map entries indefinitely. (codex P2 #1 PR #6)
+      cache.delete(key);
     }
   }
 

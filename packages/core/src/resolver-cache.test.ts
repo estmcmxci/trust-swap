@@ -150,4 +150,34 @@ describe("cachedResolveTrustProfile (TRU-75)", () => {
 
     expect(resolveImpl).toHaveBeenCalledTimes(1);
   });
+
+  it("evicts expired entries on read instead of letting them accumulate", async () => {
+    // codex P2 #1 on PR #6 — long-lived processes resolving many distinct
+    // ENS names should not leak Map entries indefinitely.
+    const profile = makeProfile();
+    const resolveImpl = vi.fn(async () => profile);
+    let nowMs = 1_000_000;
+    const now = () => nowMs;
+
+    await cachedResolveTrustProfile("alice.eth", {
+      resolveImpl,
+      now,
+      ttlMs: 1000,
+    });
+    expect(getResolverCacheSnapshot()).toHaveLength(1);
+
+    // Move past TTL. Read with `bypassCache: false` — entry exists but is
+    // stale; the cache hit branch must `delete` it before re-resolving.
+    nowMs += 5000;
+    await cachedResolveTrustProfile("alice.eth", {
+      resolveImpl,
+      now,
+      ttlMs: 1000,
+    });
+    // The fresh resolve repopulated the entry, so snapshot length is 1
+    // (not 2). The non-leak invariant: at most one entry per key, ever.
+    expect(getResolverCacheSnapshot()).toHaveLength(1);
+    // And the resolver fired twice (once initial, once after TTL).
+    expect(resolveImpl).toHaveBeenCalledTimes(2);
+  });
 });
