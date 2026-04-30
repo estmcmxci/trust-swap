@@ -7,19 +7,30 @@ import { Button } from "@/components/ui/button";
 import { TrustCard } from "@/components/trust-card";
 import { PolicyCard } from "@/components/policy-card";
 import { DecisionBanner } from "@/components/decision-banner";
+import { TokenPicker } from "@/components/token-picker";
 import { ArrowRightIcon } from "@/components/ui/icons";
 import type {
   PreviewErrorResponse,
   PreviewResponse,
 } from "@/lib/preview-types";
+import type { SiteToken } from "@/lib/token-types";
 
 const DEFAULT_RECIPIENT = "kernel.emilemarcelagustin.eth";
 const DEFAULT_AMOUNT_USD = "1";
+const DEFAULT_TOKEN_IN: SiteToken = {
+  address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+  symbol: "USDC",
+  name: "USD Coin",
+  decimals: 6,
+  chainId: 8453,
+  curated: true,
+};
 
 export default function SwapPage() {
   const [recipientEns, setRecipientEns] = useState(DEFAULT_RECIPIENT);
   const [amount, setAmount] = useState(DEFAULT_AMOUNT_USD);
   const [callerEns, setCallerEns] = useState("");
+  const [tokenIn, setTokenIn] = useState<SiteToken>(DEFAULT_TOKEN_IN);
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +46,13 @@ export default function SwapPage() {
         setError("Amount must be a positive number");
         return;
       }
+      // The size check on the server compares amounts in USDC 6-dec base
+      // units. When the user picks a non-USDC token we still send the
+      // USD-denominated amount in 6-dec units; the orchestrate path will
+      // USD-normalize via Trading API at attest time. For preview, this
+      // means non-USDC tokens are size-checked as if they were already
+      // USD-valued (consistent with how the policy author intended the
+      // cap to be read).
       const baseUnits = String(BigInt(Math.round(usd * 1_000_000)));
       const res = await fetch("/api/gate", {
         method: "POST",
@@ -42,6 +60,7 @@ export default function SwapPage() {
         body: JSON.stringify({
           recipientEns: recipientEns.trim(),
           callerEns: callerEns.trim() || undefined,
+          tokenIn: tokenIn.address,
           amount: baseUnits,
         }),
       });
@@ -102,7 +121,7 @@ export default function SwapPage() {
             title="Swap parameters"
             meta={
               <span className="font-mono text-[10.5px] tabular text-ink-faint">
-                base · USDC tokenIn
+                base · chainId 8453
               </span>
             }
           />
@@ -135,6 +154,13 @@ export default function SwapPage() {
                   spellCheck={false}
                 />
               </Field>
+              <TokenPicker
+                value={tokenIn.address}
+                onChange={setTokenIn}
+                label="Token offered"
+                hint="What you're sending — checked against the recipient's accepted-tokens list"
+                required
+              />
               <Field
                 label="Amount"
                 hint="Compared against maxAcceptedSize"

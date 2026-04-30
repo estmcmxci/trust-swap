@@ -84,7 +84,16 @@ export interface OrderStatusInput {
 }
 
 export interface SwappableTokensInput {
+  /** Source chain. Required by the Trading API. */
   chainId: number;
+  /**
+   * Pivot token. The API returns tokens routable *from* this address
+   * (not "all tokens on chain X" as you might expect from the name).
+   * Required by the Trading API; defaults to USDC on the input chain
+   * when not supplied so callers asking for a general tokens list still
+   * get a useful answer.
+   */
+  tokenIn?: Address;
 }
 
 // ---------------------------------------------------------------------------
@@ -419,8 +428,27 @@ export function createTradingClient(opts: TradingClientOptions): TradingClient {
     },
 
     async swappableTokens(input) {
+      // The Trading API names the chain query param `tokenInChainId` and
+      // also requires a `tokenIn` pivot — it returns tokens routable
+      // *from* that address rather than "all tokens on the chain." When
+      // the caller doesn't supply one, default to USDC on the input
+      // chain so a general "list me the tokens" call still returns a
+      // useful answer.
+      //
+      // Surfacing the verbatim API errors so you don't repeat our
+      // discovery loop:
+      //   RequestValidationError: "tokenInChainId" is required
+      //   RequestValidationError: "tokenIn" is required
+      const usdc = USDC_BY_CHAIN[input.chainId];
+      const tokenIn = input.tokenIn ?? usdc;
+      if (!tokenIn) {
+        throw new Error(
+          `swappableTokens: no tokenIn supplied and no USDC fallback for chainId=${input.chainId}`,
+        );
+      }
       const params = new URLSearchParams();
-      params.set("chainId", String(input.chainId));
+      params.set("tokenInChainId", String(input.chainId));
+      params.set("tokenIn", tokenIn);
       return request<SwappableTokensResponse>(
         "GET",
         `/swappable_tokens?${params.toString()}`,
