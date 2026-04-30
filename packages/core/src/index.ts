@@ -60,6 +60,7 @@ export {
   buildGatedSwapCalldata,
   createMockOracleClient,
   createHttpOracleClient,
+  resolveWithSubnameInheritance,
   OracleRefusalError,
   PLACEHOLDER_ROUTER_ADDRESS,
   type OracleClient,
