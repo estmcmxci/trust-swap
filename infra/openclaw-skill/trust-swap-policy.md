@@ -94,7 +94,9 @@ valid one and emits `tick.error` JSONL until you fix the file):
 - `endAt ≤ startAt`
 - `amount` matching `\d+(\.\d+)?` only (no `1e6`, no `-5`)
 - `recipient` neither a 0x address nor an ENS name (must contain `.`)
-- Token symbol with non-alphanumeric characters or > 16 chars
+- Token symbol not matching `^[A-Za-z][A-Za-z0-9]*$` (must start with a
+  letter, alphanumeric only) or > 16 chars — so `WETH`, `USDC`, `cbETH`
+  are accepted; `1INCH`, `ETH-2`, leading-digit symbols are rejected
 - Duplicate intent `id`
 - `haltOnConsecutiveFailures = 0` (would never halt — meaningless)
 - Negative `maxDailySpendUsd` or `minSecondsBetweenSwaps`
@@ -132,15 +134,13 @@ EOF
 mv /srv/trust-swap/policy.json.tmp /srv/trust-swap/policy.json
 ```
 
-Or in one step with `install`:
-
-```bash
-install -m 0664 -g trust-swap-policy <(echo '{...new policy json...}') \
-        /srv/trust-swap/policy.json
-```
-
 The `mv`/`rename` step is what makes it atomic — the daemon's next tick
 reads either the old file or the new file, never a partial one.
+
+> **Do not** use `install`, `cp`, `tee`, `> policy.json`, or any flow
+> that writes to the destination path directly. Those copy bytes into
+> the existing file and the daemon can read it mid-write — the very
+> truncation race the tmp+rename pattern exists to avoid.
 
 ### Pre-write validation
 
