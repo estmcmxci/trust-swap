@@ -56,6 +56,20 @@ export {
 } from "./risk-policy.js";
 
 export {
+  OperatingPolicySchema,
+  OperatingPolicyError,
+  parseOperatingPolicy,
+  loadOperatingPolicyFromDisk,
+  watchOperatingPolicy,
+  type OperatingPolicy,
+  type OperatingPolicyAgent,
+  type OperatingPolicyIntent,
+  type OperatingPolicyConstraints,
+  type WatchOperatingPolicyOptions,
+  type WatchOperatingPolicyHandle,
+} from "./operating-policy.js";
+
+export {
   orchestrate,
   buildGatedSwapCalldata,
   createMockOracleClient,

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "agent": {
+    "ensName": "daemon.emilemarcelagustin.eth",
+    "kernelAddress": "0x522D9d15D425E2b819f8963A10596eADCB19255d",
+    "sessionKeyPath": "~/.synthesis/daemon-session-key.json"
+  },
+  "schedule": {
+    "intervalSec": 300
+  },
+  "intents": [
+    {
+      "id": "drip-weth-to-usdc",
+      "kind": "swap",
+      "tokenIn": "WETH",
+      "tokenOut": "USDC",
+      "amount": "0.0005",
+      "recipient": "kernel.emilemarcelagustin.eth",
+      "enabled": true
+    }
+  ],
+  "constraints": {
+    "maxDailySpendUsd": 25,
+    "minSecondsBetweenSwaps": 60,
+    "haltOnConsecutiveFailures": 3
+  }
+}
