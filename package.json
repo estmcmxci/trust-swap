@@ -20,6 +20,7 @@
     "session-key:issue": "tsx --env-file=.env scripts/issue-session-key.ts",
     "provision:daemon": "tsx --env-file=.env scripts/provision-daemon.ts",
     "bootstrap:daemon-kernel": "tsx --env-file=.env scripts/bootstrap-daemon-kernel.ts",
+    "set:agent-endpoint": "tsx --env-file=.env scripts/set-agent-endpoint.ts",
     "smoke:uniswap": "tsx --env-file=.env scripts/smoke-uniswap.ts",
     "smoke:bundler": "tsx --env-file=.env scripts/smoke-bundler.ts",
     "e2e:phase1": "scripts/e2e-phase1.sh",

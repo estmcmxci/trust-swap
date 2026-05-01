@@ -86,13 +86,47 @@ async function decryptKeystore(
   return `0x${Buffer.concat([decipher.update(ctBuf), decipher.final()]).toString("hex")}` as Hex;
 }
 
+/**
+ * Mirrors `pathsFor` in scripts/provision-daemon.ts. Slug defaults to
+ * `<subname>-<parent-first-label>` with a back-compat exception for the
+ * original `daemon.emilemarcelagustin.eth`, whose files predate the
+ * slug scheme and live at the un-prefixed `daemon-*.json` paths.
+ */
+function pathsFor(ensName: string): { keystore: string; pub: string } {
+  const dot = ensName.indexOf(".");
+  if (dot === -1) {
+    throw new Error(`--ens-name must be a subdomain (got "${ensName}")`);
+  }
+  const subnameLabel = ensName.slice(0, dot);
+  const parentEnsName = ensName.slice(dot + 1);
+  const isLegacyDaemon =
+    subnameLabel === "daemon" && parentEnsName === "emilemarcelagustin.eth";
+  const parentFirstLabel = parentEnsName.slice(0, parentEnsName.indexOf("."));
+  const slug = isLegacyDaemon
+    ? "daemon"
+    : `${subnameLabel}-${parentFirstLabel}`;
+  const safeSlug = slug.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  return {
+    keystore: join(homedir(), ".synthesis", `${safeSlug}-keystore.json`),
+    pub: join(homedir(), ".synthesis", `${safeSlug}-kernel.pub.json`),
+  };
+}
+
 async function main() {
   const bundlerUrl = process.env.BUNDLER_URL_BASE;
   if (!bundlerUrl) throw new Error("BUNDLER_URL_BASE not set");
   const rpcUrl = process.env.BASE_RPC_URL ?? "https://mainnet.base.org";
 
-  const keystorePath = join(homedir(), ".synthesis", "daemon-keystore.json");
-  const pubPath = join(homedir(), ".synthesis", "daemon-kernel.pub.json");
+  // --ens-name <subname> picks which daemon's keystore to bootstrap.
+  // Defaults to the original daemon for backwards compat.
+  const argv = process.argv.slice(2);
+  const ensIdx = argv.indexOf("--ens-name");
+  const ensName =
+    ensIdx >= 0 && argv[ensIdx + 1]
+      ? argv[ensIdx + 1]
+      : "daemon.emilemarcelagustin.eth";
+  const { keystore: keystorePath, pub: pubPath } = pathsFor(ensName);
+  console.log(`bootstrapping for ${ensName}`);
   if (!existsSync(keystorePath)) {
     throw new Error(`daemon keystore not found at ${keystorePath}`);
   }
