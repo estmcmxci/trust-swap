@@ -1,0 +1,43 @@
+# TrustSwap autonomous daemon agent — second instance (daemon.trustrust.eth, TRU-42).
+# Installed by infra/droplet/install.sh --instance trustrust to /etc/systemd/system/.
+[Unit]
+Description=TrustSwap autonomous daemon agent (trustrust)
+Documentation=https://github.com/estmcmxci/trust-swap
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=trust-swap
+Group=trust-swap
+WorkingDirectory=/opt/trust-swap/cli
+EnvironmentFile=/etc/trust-swap/agent-trustrust.env
+ExecStart=/usr/bin/node /opt/trust-swap/cli/dist/index.js agent run --policy /srv/trust-swap/policy-trustrust.json
+Restart=always
+RestartSec=10
+# Crash-loop guard: if the unit fails 5 times in 5 minutes, systemd stops
+# trying. Recovery is `systemctl reset-failed trust-swap-agent-trustrust`
+# after fixing the underlying cause.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+MemoryMax=320M
+StandardOutput=journal
+StandardError=journal
+
+# Hardening — same surface as the primary daemon.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/trust-swap /var/lib/trust-swap
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
