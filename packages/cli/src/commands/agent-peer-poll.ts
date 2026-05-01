@@ -129,6 +129,14 @@ export async function fetchPeerIntents(
     return { kind: "no-endpoint" };
   }
 
+  // `agent-endpoint` is a **base URL** by ENSIP-26 convention — the same
+  // record is used by `resolveRiskPolicy` to reach `<endpoint>/policy`
+  // (see risk-policy.ts:fetchPolicyFromEndpoint). Mirror that shape here
+  // so a single ENS write can feed both the discovery and the
+  // policy-override paths. Strip trailing slashes to match exactly what
+  // /policy does.
+  const url = `${endpoint.replace(/\/+$/, "")}/intents`;
+
   // AbortController on the fetch so a stalled peer can't wedge a tick.
   // Tailscale RTT is sub-ms; anything above timeoutMs is a real outage,
   // not slow-network noise.
@@ -136,7 +144,7 @@ export async function fetchPeerIntents(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let body: unknown;
   try {
-    const res = await fetchImpl(endpoint, {
+    const res = await fetchImpl(url, {
       method: "GET",
       headers: { accept: "application/json" },
       signal: controller.signal,
@@ -144,7 +152,7 @@ export async function fetchPeerIntents(
     if (!res.ok) {
       return {
         kind: "fetch-failed",
-        message: `HTTP ${res.status} from ${endpoint}`,
+        message: `HTTP ${res.status} from ${url}`,
       };
     }
     body = await res.json();

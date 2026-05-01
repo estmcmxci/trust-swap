@@ -127,7 +127,7 @@ describe("fetchPeerIntents", () => {
   });
 
   it("returns ok with parsed body on a 200", async () => {
-    mockedResolve.mockResolvedValueOnce("http://peer.test/intents");
+    mockedResolve.mockResolvedValueOnce("http://peer.test");
     const fetchImpl = vi.fn(async () => ({
       ok: true,
       status: 200,
@@ -144,6 +144,47 @@ describe("fetchPeerIntents", () => {
       expect(r.body.ensName).toBe("peer.eth");
       expect(r.body.intents).toEqual([]);
     }
+  });
+
+  it("appends /intents to the agent-endpoint base URL", async () => {
+    // ENSIP-26 convention: `agent-endpoint` is a base URL the same way
+    // resolveRiskPolicy treats it (`<endpoint>/policy`). This test pins
+    // the contract so a regression to the raw-URL form would fail loudly.
+    mockedResolve.mockResolvedValueOnce("http://peer.test:18791");
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ensName: "peer.eth",
+        kernelAddress: KERNEL,
+        listedAt: "2026-05-01T22:00:00.000Z",
+        intents: [],
+      }),
+    })) as unknown as typeof fetch;
+    await fetchPeerIntents("peer.eth", { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://peer.test:18791/intents",
+      expect.any(Object),
+    );
+  });
+
+  it("strips trailing slashes from the base URL before appending /intents", async () => {
+    mockedResolve.mockResolvedValueOnce("http://peer.test:18791///");
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ensName: "peer.eth",
+        kernelAddress: KERNEL,
+        listedAt: "2026-05-01T22:00:00.000Z",
+        intents: [],
+      }),
+    })) as unknown as typeof fetch;
+    await fetchPeerIntents("peer.eth", { fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://peer.test:18791/intents",
+      expect.any(Object),
+    );
   });
 
   it("returns fetch-failed on a non-2xx response", async () => {

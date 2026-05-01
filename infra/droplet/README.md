@@ -136,6 +136,15 @@ curl http://100.121.243.97:18790/intents   # 404 unless policy.listen is set (Ph
 
 ### A2A discovery (Phase 6c, optional)
 
+The daemon advertises its discovery endpoint via the ENSIP-26
+`agent-endpoint` ENS text record. **This is a base URL** — the same
+record is consumed by `@trust-swap/core`'s RiskPolicy resolver
+(`<endpoint>/policy`) and by the A2A peer poll
+(`<endpoint>/intents`). Set it without a path component, e.g.
+`http://100.121.243.97:18790`, and the consumers append the right
+sub-path. The repo's `scripts/set-agent-endpoint.ts` writes whatever
+URL you pass it.
+
 To turn on the peer-poll loop on a daemon, add a `listen` block to its
 operating policy and restart:
 
