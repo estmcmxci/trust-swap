@@ -7,10 +7,10 @@
   "chainId": 8453,
   "daemonOwnerAddress": "0x257812e6eD69f75ED2F8f36E0aE654eC91A46B47",
   "daemonKernelAddress": "0x522D9d15D425E2b819f8963A10596eADCB19255d",
-  "sessionSignerAddress": "0xB81BEAcfD4008323E675E67a09b082c32D2934E3",
-  "sessionKeyValidUntil": 1778169550,
-  "sessionKeyValidUntilISO": "2026-05-07T15:59:10.000Z",
-  "routerPinned": "0x4aFa38bC5A775B08826f8644327C0c435fF5BD3a",
+  "sessionSignerAddress": "0xC593989FcF7EcEF1Ae0539d50C577cCC66D32ED1",
+  "sessionKeyValidUntil": 1778261859,
+  "sessionKeyValidUntilISO": "2026-05-08T17:37:39.000Z",
+  "routerPinned": "0x98Ae714e7A5b34c861370Fe0D7F57c882c2FB47E",
   "keystorePath": "~/.synthesis/daemon-keystore.json",
   "sessionKeyPath": "~/.synthesis/daemon-session-key.json",
   "riskPolicy": {
@@ -22,9 +22,9 @@
     "published": "{\"minCounterpartyTier\":\"registered\",\"maxAcceptedSize\":\"100000000\",\"acceptedTokens\":[\"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\"]}"
   },
   "txs": {
-    "setAddr": "0x4e3b66b0f7d841aea8a2307a3880cb05de400e099440999280873d3c26d7fbe6",
-    "setRiskPolicy": "0x321c48bec9ccaccb8e460f0842cf0671a61b0572203a8563db0a56ad5d303fb7"
+    "setAddr": "skipped",
+    "setRiskPolicy": "0xe4fe0fe49cd13f530645a10766df9f8c5497244cc5f3478bbaf8f52eb5137de2"
   },
-  "provisionedAt": "2026-04-30T15:59:11.444Z",
+  "provisionedAt": "2026-05-01T17:37:39.933Z",
   "purpose": "TrustSwap autonomous-daemon agent identity — Phase 5a (TRU-80). Subname registered + funded by parent owner via MetaMask; ENS records + session key issued by daemon owner key."
 }

@@ -35,7 +35,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
                 vm.addr(wrongPrivKey)
             )
         );
-        router.gatedSwap{value: 1_000_000}(forwardedCalldata, att, badSig);
+        _gatedSwapEth(1_000_000, forwardedCalldata, att, badSig);
     }
 
     function test_RejectsTamperedAttestation() public {
@@ -55,7 +55,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
         // digest), so we match the selector prefix rather than the full
         // revert data.
         vm.expectPartialRevert(TrustSwapRouter.BadOracleSignature.selector);
-        router.gatedSwap{value: 1_000_000}(forwardedCalldata, tampered, sig);
+        _gatedSwapEth(1_000_000, forwardedCalldata, tampered, sig);
     }
 
     function test_RejectsCalldataMismatch() public {
@@ -74,7 +74,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
 
         bytes memory tamperedCalldata = hex"deadbeef00";
         vm.expectPartialRevert(TrustSwapRouter.CalldataHashMismatch.selector);
-        router.gatedSwap{value: 1_000_000}(tamperedCalldata, att, sig);
+        _gatedSwapEth(1_000_000, tamperedCalldata, att, sig);
     }
 
     function test_AcceptsValidOracleSignature() public {
@@ -85,7 +85,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
         );
         bytes memory sig = _signAttestation(att);
         // No revert expected; emit + state changes verified by other tests.
-        router.gatedSwap{value: 1_000_000}(forwardedCalldata, att, sig);
+        _gatedSwapEth(1_000_000, forwardedCalldata, att, sig);
         assertTrue(
             router.usedNonce(swapper, 102),
             "nonce should be marked used after valid sig"
@@ -105,7 +105,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
         bytes memory sig = _signAttestation(att);
 
         // First call succeeds.
-        router.gatedSwap{value: 1_000_000}(forwardedCalldata, att, sig);
+        _gatedSwapEth(1_000_000, forwardedCalldata, att, sig);
 
         // Second call with the same (swapper, nonce) reverts.
         vm.expectRevert(
@@ -115,7 +115,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
                 200
             )
         );
-        router.gatedSwap{value: 1_000_000}(forwardedCalldata, att, sig);
+        _gatedSwapEth(1_000_000, forwardedCalldata, att, sig);
     }
 
     function test_DistinctNoncesDoNotCollide() public {
@@ -130,8 +130,8 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
             TrustSwapRouter.TrustTier.Verified,
             202
         );
-        router.gatedSwap{value: 1_000_000}(forwardedCalldata, a, _signAttestation(a));
-        router.gatedSwap{value: 1_000_000}(forwardedCalldata, b, _signAttestation(b));
+        _gatedSwapEth(1_000_000, forwardedCalldata, a, _signAttestation(a));
+        _gatedSwapEth(1_000_000, forwardedCalldata, b, _signAttestation(b));
     }
 
     // -------------------------------------------------------------------
@@ -157,7 +157,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
                 att.expiresAt + 1
             )
         );
-        router.gatedSwap{value: 1_000_000}(forwardedCalldata, att, sig);
+        _gatedSwapEth(1_000_000, forwardedCalldata, att, sig);
     }
 
     function test_AtExpiryBoundarySucceeds() public {
@@ -170,7 +170,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
         );
         bytes memory sig = _signAttestation(att);
         vm.warp(att.expiresAt);
-        router.gatedSwap{value: 1_000_000}(forwardedCalldata, att, sig);
+        _gatedSwapEth(1_000_000, forwardedCalldata, att, sig);
     }
 
     // -------------------------------------------------------------------
@@ -212,7 +212,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
         // the full msg.value goes to UR.
         uint256 amount = 1 ether;
         vm.expectCall(UNIVERSAL_ROUTER, amount, specific);
-        router.gatedSwap{value: amount}(specific, att, sig);
+        _gatedSwapEth(amount, specific, att, sig);
     }
 
     function test_ETHValueForwarded_NetOfFee() public {
@@ -232,7 +232,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
         uint256 expectedForward = amount - expectedFee;
 
         vm.expectCall(UNIVERSAL_ROUTER, expectedForward, specific);
-        router.gatedSwap{value: amount}(specific, att, sig);
+        _gatedSwapEth(amount, specific, att, sig);
 
         assertEq(
             feeRecipient.balance,
@@ -256,7 +256,7 @@ contract TrustSwapRouterCryptoTest is TrustSwapRouterBaseTest {
 
         uint256 expectedFee = (amount * expectedBps) / 10_000;
 
-        router.gatedSwap{value: amount}(forwardedCalldata, att, sig);
+        _gatedSwapEth(amount, forwardedCalldata, att, sig);
 
         assertEq(
             feeRecipient.balance,

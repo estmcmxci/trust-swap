@@ -1,4 +1,5 @@
 import {
+  encodeAbiParameters,
   encodeFunctionData,
   isAddress,
   keccak256,
@@ -140,9 +141,12 @@ export function createHttpOracleClient(
 // ---------------------------------------------------------------------------
 // gatedSwap calldata encoding
 //
-// The Phase 2 `TrustSwapRouter.gatedSwap(bytes,Attestation,bytes)` ABI is
-// stable enough to encode against now — only the deployed address changes.
-// orchestrate produces the calldata that gets passed to `signer.execute()`.
+// v2 (TRU-86) — `TrustSwapRouter.gatedSwap(address,address,uint256,bytes,
+// Attestation,bytes)`. The first three args are the ERC20 pull params
+// (payer, tokenIn, amountIn); for ETH-input swaps, pass zeros and the
+// router uses `msg.value` directly. The byte-perfect calldata is also
+// hashed off-chain into `Attestation.calldataHash` so a swap can't be
+// retargeted post-attestation.
 // ---------------------------------------------------------------------------
 
 const GATED_SWAP_ABI = [
@@ -151,6 +155,9 @@ const GATED_SWAP_ABI = [
     name: "gatedSwap",
     stateMutability: "payable",
     inputs: [
+      { name: "payer", type: "address" },
+      { name: "tokenIn", type: "address" },
+      { name: "amountIn", type: "uint256" },
       { name: "universalRouterCalldata", type: "bytes" },
       {
         name: "attestation",
@@ -181,6 +188,18 @@ const TIER_INDEX: Record<TrustTier, number> = {
 };
 
 export function buildGatedSwapCalldata(args: {
+  /**
+   * For ERC20-input swaps, the address whose `tokenIn` allowance the
+   * router pulls from (must match `attestation.swapper` on-chain). For
+   * native-ETH swaps, pass `0x0000…0000` and the router uses `msg.value`
+   * directly.
+   */
+  payer: Address;
+  /** Input token. Ignored when `payer == 0x0`. Caller must keep this in
+   * sync with the token encoded in `universalRouterCalldata`. */
+  tokenIn: Address;
+  /** Exact ERC20 amount the router pulls. Ignored when `payer == 0x0`. */
+  amountIn: bigint;
   universalRouterCalldata: Hex;
   attestation: Attestation;
   oracleSig: Hex;
@@ -189,6 +208,9 @@ export function buildGatedSwapCalldata(args: {
     abi: GATED_SWAP_ABI,
     functionName: "gatedSwap",
     args: [
+      args.payer,
+      args.tokenIn,
+      args.amountIn,
       args.universalRouterCalldata,
       {
         swapper: args.attestation.swapper,
@@ -212,6 +234,7 @@ export function buildGatedSwapCalldata(args: {
 export const PLACEHOLDER_ROUTER_ADDRESS: Address =
   "0x0000000000000000000000000000000000000000";
 
+const ZERO_ADDRESS: Address = "0x0000000000000000000000000000000000000000";
 const SYNTHETIC_TXHASH: Hex = `0x${"00".repeat(32)}` as Hex;
 
 // ---------------------------------------------------------------------------
@@ -517,13 +540,29 @@ export async function orchestrate(
     };
   }
 
-  // 6. Encode the would-be gatedSwap calldata against a SENTINEL
-  //    attestation, then extract the UR calldata to hash. We need the
-  //    hash before we can ask the oracle to sign — so we don't yet have a
-  //    real attestation; the contract's `keccak256(universalRouterCalldata)
-  //    == att.calldataHash` check uses ONLY the bytes of `swapTransaction.data`,
-  //    which is what the oracle will be asked to attest.
-  const calldataHash = keccak256(swapTransaction.data);
+  // 6. Compute the binding hash. The on-chain check (Codex P1 #15) hashes
+  //    `(payer, tokenIn, amountIn, universalRouterCalldata)` together so a
+  //    front-runner can't mutate the pull params on a leaked attestation
+  //    without invalidating the oracle signature. Derive the same triple
+  //    here so the off-chain hash matches what the contract recomputes.
+  const isErc20Input =
+    opts.tokenIn !== ZERO_ADDRESS && BigInt(swapTransaction.value) === 0n;
+  const payer = (
+    isErc20Input ? (opts.signer.address as Address) : ZERO_ADDRESS
+  ) as Address;
+  const pullTokenIn = isErc20Input ? opts.tokenIn : ZERO_ADDRESS;
+  const pullAmountIn = isErc20Input ? amount : 0n;
+  const calldataHash = keccak256(
+    encodeAbiParameters(
+      [
+        { type: "address" },
+        { type: "address" },
+        { type: "uint256" },
+        { type: "bytes" },
+      ],
+      [payer, pullTokenIn, pullAmountIn, swapTransaction.data],
+    ),
+  );
   const expectedOutAmount = isUniswapXQuote(quote)
     ? quote.quote.orderInfo.outputs[0]?.endAmount ??
       quote.quote.orderInfo.outputs[0]?.startAmount
@@ -582,10 +621,25 @@ export async function orchestrate(
     throw err;
   }
 
-  // 8. Encode the gatedSwap calldata. The contract verifies
-  //    `keccak256(universalRouterCalldata) == att.calldataHash` before
-  //    forwarding — replays against a different swap shape revert.
+  // 8. Encode the gatedSwap calldata. The contract verifies the binding
+  //    hash (`keccak256(abi.encode(payer, tokenIn, amountIn,
+  //    universalRouterCalldata)) == att.calldataHash`) before
+  //    forwarding — replays against a different swap shape OR mutated
+  //    pull params revert.
+  //
+  //    v2 (TRU-86): the router needs `(payer, tokenIn, amountIn)` so it
+  //    can `transferFrom` the input ERC20 from the swapper into itself
+  //    before forwarding to UR. The wrapped UR is `payerIsUser=true`
+  //    msg.sender = TrustSwapRouter; without the pre-pull, Permit2
+  //    cannot satisfy the transfer because the router holds zero
+  //    tokens. For native-ETH inputs (`tokenIn == 0x0` or
+  //    `swap.value > 0`), pass `payer = 0x0` so the router skips the
+  //    pull and uses `msg.value` directly. The triple was derived in
+  //    step 6 so the calldata hash and the broadcast args agree.
   const routerCalldata = buildGatedSwapCalldata({
+    payer,
+    tokenIn: pullTokenIn,
+    amountIn: pullAmountIn,
     universalRouterCalldata: swapTransaction.data,
     attestation,
     oracleSig: attestationSignature,

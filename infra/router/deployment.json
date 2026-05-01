@@ -1,25 +1,30 @@
 {
   "chain": "base",
   "chainId": 8453,
-  "address": "0x4aFa38bC5A775B08826f8644327C0c435fF5BD3a",
+  "address": "0x98Ae714e7A5b34c861370Fe0D7F57c882c2FB47E",
   "deployer": "0x287B2526e78720bA5A4C0198422aa5907a83fa4F",
-  "deployBlock": null,
+  "deployBlock": 45437488,
   "create2Salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "constructor": {
     "oraclePubkey": "0xB70d715b7ec382789c17834E8c5EA78548885106",
-    "feeRecipient": "0xB70d715b7ec382789c17834E8c5EA78548885106"
+    "feeRecipient": "0xB70d715b7ec382789c17834E8c5EA78548885106",
+    "initialApprovals": [
+      "0x4200000000000000000000000000000000000006",
+      "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    ]
   },
   "wraps": {
-    "universalRouter": "0x6fF5693b99212Da76ad316178A184AB56D299b43"
+    "universalRouter": "0x6fF5693b99212Da76ad316178A184AB56D299b43",
+    "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3"
   },
-  "deployedAt": "2026-04-29T19:42:00Z",
+  "deployedAt": "2026-05-01T18:30:00Z",
   "verifiedOnBaseScan": false,
-  "basescan": "https://basescan.org/address/0x4aFa38bC5A775B08826f8644327C0c435fF5BD3a",
-  "firstBroadcast": "https://basescan.org/tx/0x45ee201299643adbd4bd8cabfc0825e730b511e063bb3c14414ecbc0f36fd228",
+  "basescan": "https://basescan.org/address/0x98Ae714e7A5b34c861370Fe0D7F57c882c2FB47E",
+  "firstBroadcast": "https://basescan.org/tx/0xf584c0341edaec941a7b3c74d55066bfc37f45eb188dc81919a33461c6546863",
   "supersedes": {
-    "address": "0x3AEFfbAA88186E557eADdCf6bb57C536f3e40925",
-    "deployTxHash": "0x775f8b8aa75bd1ab66492aadef11fefb8299f6eaf70af4c7821d7bfed185a243",
-    "supersededReason": "Codex P1 #2 — Attestation gained `bytes32 calldataHash` to bind the signed attestation to the exact `universalRouterCalldata` payload, preventing attestation replay against a different swap shape. New ABI → new function selector → new bytecode → new CREATE2 address.",
-    "firstBroadcast": "https://basescan.org/tx/0x3744af390baf136dbe2402978ecd448eba7dec2053fbe361ee1e2c428d3b33a2"
+    "address": "0x4aFa38bC5A775B08826f8644327C0c435fF5BD3a",
+    "deployTxHash": "0x43d99f283378a0dbbb37e2e47b7f5ff4f852cc6b853c6dd672e0f8eb5514f1bd",
+    "supersededReason": "TRU-86 — gatedSwap gained (address payer, address tokenIn, uint256 amountIn) so the router can pull ERC20 input from the kernel before forwarding to UR. v1's path forwarded UR calldata via low-level call with msg.sender=router, but UR's Permit2 transferFrom resolved payer=msg.sender (the router, holding zero tokens), reverting every ERC20-input swap. v2 also pre-approves Permit2 + UR for WETH/USDC in the constructor and exposes a permissionless setApprovals(token) for forward-compat. New constructor signature → new bytecode → new CREATE2 address.",
+    "firstBroadcast": "https://basescan.org/tx/0x45ee201299643adbd4bd8cabfc0825e730b511e063bb3c14414ecbc0f36fd228"
   }
 }

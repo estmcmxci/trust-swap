@@ -193,7 +193,7 @@ async function main() {
   // validator rejects calls whose selector doesn't match this ABI.
   // Last updated when `Attestation` gained `calldataHash` (Codex P1 #2).
   const ROUTER_ABI = parseAbi([
-    "function gatedSwap(bytes universalRouterCalldata, (address swapper, address recipient, uint8 swapperTier, uint8 recipientTier, uint256 expiresAt, uint256 nonce, bytes32 calldataHash) attestation, bytes oracleSig) external payable",
+    "function gatedSwap(address payer, address tokenIn, uint256 amountIn, bytes universalRouterCalldata, (address swapper, address recipient, uint8 swapperTier, uint8 recipientTier, uint256 expiresAt, uint256 nonce, bytes32 calldataHash) attestation, bytes oracleSig) external payable",
   ]);
   const callPolicy = toCallPolicy({
     policyVersion: CallPolicyVersion.V0_0_4,

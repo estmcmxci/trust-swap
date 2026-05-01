@@ -38,6 +38,9 @@ importers:
       '@trust-swap/core':
         specifier: workspace:*
         version: link:../core
+      '@zerodev/multi-chain-ecdsa-validator':
+        specifier: ^5.4.5
+        version: 5.4.5(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))
       '@zerodev/permissions':
         specifier: ^5.6.3
         version: 5.6.3(@zerodev/sdk@5.5.10(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(@zerodev/webauthn-key@5.5.0(viem@2.48.4(typescript@5.9.3)(zod@4.3.6)))(viem@2.48.4(typescript@5.9.3)(zod@4.3.6))

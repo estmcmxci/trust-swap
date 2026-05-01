@@ -19,7 +19,7 @@ contract TrustSwapRouterTiersTest is TrustSwapRouterBaseTest {
         );
         bytes memory sig = _signAttestation(att);
         vm.expectRevert(TrustSwapRouter.TierNone.selector);
-        router.gatedSwap{value: 1 ether}(forwardedCalldata, att, sig);
+        _gatedSwapEth(1 ether, forwardedCalldata, att, sig);
     }
 
     function test_RevertWhen_RecipientTierNone() public {
@@ -30,7 +30,7 @@ contract TrustSwapRouterTiersTest is TrustSwapRouterBaseTest {
         );
         bytes memory sig = _signAttestation(att);
         vm.expectRevert(TrustSwapRouter.TierNone.selector);
-        router.gatedSwap{value: 1 ether}(forwardedCalldata, att, sig);
+        _gatedSwapEth(1 ether, forwardedCalldata, att, sig);
     }
 
     function test_RevertWhen_BothTiersNone() public {
@@ -41,7 +41,7 @@ contract TrustSwapRouterTiersTest is TrustSwapRouterBaseTest {
         );
         bytes memory sig = _signAttestation(att);
         vm.expectRevert(TrustSwapRouter.TierNone.selector);
-        router.gatedSwap{value: 1 ether}(forwardedCalldata, att, sig);
+        _gatedSwapEth(1 ether, forwardedCalldata, att, sig);
     }
 
     // -------------------------------------------------------------------
@@ -67,7 +67,7 @@ contract TrustSwapRouterTiersTest is TrustSwapRouterBaseTest {
                 50_000_000
             )
         );
-        router.gatedSwap{value: 50_000_001}(forwardedCalldata, att, sig);
+        _gatedSwapEth(50_000_001, forwardedCalldata, att, sig);
     }
 
     function test_DiscoverableCap_AtCapSucceeds() public {
@@ -88,7 +88,7 @@ contract TrustSwapRouterTiersTest is TrustSwapRouterBaseTest {
                 500_000_000
             )
         );
-        router.gatedSwap{value: 500_000_001}(forwardedCalldata, att, sig);
+        _gatedSwapEth(500_000_001, forwardedCalldata, att, sig);
     }
 
     function test_VerifiedCap_AtCapSucceeds() public {
@@ -109,7 +109,7 @@ contract TrustSwapRouterTiersTest is TrustSwapRouterBaseTest {
                 5_000_000_000
             )
         );
-        router.gatedSwap{value: 5_000_000_001}(forwardedCalldata, att, sig);
+        _gatedSwapEth(5_000_000_001, forwardedCalldata, att, sig);
     }
 
     function test_FullTier_Unbounded() public {
@@ -139,7 +139,7 @@ contract TrustSwapRouterTiersTest is TrustSwapRouterBaseTest {
                 50_000_000
             )
         );
-        router.gatedSwap{value: 51_000_000}(forwardedCalldata, att, sig);
+        _gatedSwapEth(51_000_000, forwardedCalldata, att, sig);
     }
 
     function test_StricterWinsJoin_VerifiedSwapper_DiscoverableRecipient()
@@ -160,7 +160,7 @@ contract TrustSwapRouterTiersTest is TrustSwapRouterBaseTest {
                 500_000_000
             )
         );
-        router.gatedSwap{value: 1_000_000_000}(forwardedCalldata, att, sig);
+        _gatedSwapEth(1_000_000_000, forwardedCalldata, att, sig);
     }
 
     function test_StricterWinsJoin_AtJoinedCapSucceeds() public {
@@ -183,7 +183,7 @@ contract TrustSwapRouterTiersTest is TrustSwapRouterBaseTest {
             5_000_000_000,
             (5_000_000_000 * 25) / 10_000
         );
-        router.gatedSwap{value: 5_000_000_000}(forwardedCalldata, att, sig);
+        _gatedSwapEth(5_000_000_000, forwardedCalldata, att, sig);
     }
 
     // -------------------------------------------------------------------
@@ -213,7 +213,7 @@ contract TrustSwapRouterTiersTest is TrustSwapRouterBaseTest {
             amount,
             expectedFee
         );
-        router.gatedSwap{value: amount}(forwardedCalldata, att, sig);
+        _gatedSwapEth(amount, forwardedCalldata, att, sig);
 
         // Fee landed at FEE_RECIPIENT.
         assertEq(feeRecipient.balance, expectedFee, "fee recipient balance");

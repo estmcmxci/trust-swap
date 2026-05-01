@@ -40,10 +40,14 @@ export interface AttestRequest {
    */
   amountOut?: string;
   /**
-   * `keccak256(universalRouterCalldata)`. The oracle binds this hash into
-   * the signed attestation; the on-chain router refuses to forward calldata
-   * that hashes to anything else. Without this binding, a valid attestation
-   * could be replayed against a different swap shape.
+   * `keccak256(abi.encode(payer, tokenIn, amountIn, universalRouterCalldata))`.
+   * The oracle binds this hash into the signed attestation; the on-chain
+   * router recomputes the same hash from the live `gatedSwap` args and
+   * refuses to forward when the result doesn't match. Binding the pull
+   * triple — not just the UR calldata — closes Codex P1 #15: a front-runner
+   * who saw a valid attestation+sig in flight could otherwise replay it
+   * with a larger `amountIn`, over-pulling from `att.swapper` while UR
+   * only consumed the original swap amount.
    */
   calldataHash?: Hex;
 }
@@ -59,9 +63,10 @@ export interface Attestation {
   /** Per-swapper nonce; the router rejects re-broadcasts of the same nonce. */
   nonce: number;
   /**
-   * `keccak256(universalRouterCalldata)`. Binds the attestation to the
-   * specific swap shape the oracle saw — different calldata means a
-   * different swap, which the contract refuses to forward.
+   * `keccak256(abi.encode(payer, tokenIn, amountIn, universalRouterCalldata))`.
+   * Binds the attestation to the FULL gated-swap payload — the UR calldata
+   * AND the pull triple — so neither the swap shape nor the pull amount
+   * can be mutated post-attestation without invalidating the signature.
    */
   calldataHash: Hex;
 }

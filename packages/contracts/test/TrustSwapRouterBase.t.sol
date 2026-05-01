@@ -42,7 +42,12 @@ abstract contract TrustSwapRouterBaseTest is Test {
 
     function setUp() public virtual {
         oraclePubkey = vm.addr(oraclePrivKey);
-        router = new TrustSwapRouter(oraclePubkey, feeRecipient);
+        // No initial approvals in tests — Permit2 / WETH / USDC have no
+        // bytecode in a fresh forge environment, so the constructor's
+        // approval calls would revert. ERC20-input tests etch their own
+        // mocks and call `setApprovals` after deploy.
+        address[] memory empty;
+        router = new TrustSwapRouter(oraclePubkey, feeRecipient, empty);
 
         // Etch the mock UR's runtime code at the canonical Base address so
         // `gatedSwap` can call it without us deploying a real Universal
@@ -72,11 +77,36 @@ abstract contract TrustSwapRouterBaseTest is Test {
     }
 
     /// Variant for tests that forward a non-default calldata payload —
-    /// the calldataHash in the attestation must match exactly.
+    /// the calldataHash in the attestation must match exactly. Defaults
+    /// to the ETH-path pull params `(0,0,0)` to match `_gatedSwapEth`.
     function _buildAttestationWithCalldata(
         TrustSwapRouter.TrustTier swapperTier,
         TrustSwapRouter.TrustTier recipientTier,
         uint256 nonce,
+        bytes memory forwarded
+    ) internal view returns (TrustSwapRouter.Attestation memory) {
+        return _buildAttestationWithPull(
+            swapperTier,
+            recipientTier,
+            nonce,
+            address(0),
+            address(0),
+            0,
+            forwarded
+        );
+    }
+
+    /// Variant for ERC20-input tests that forward a `(payer, tokenIn,
+    /// amountIn)` triple. The on-chain check (Codex P1 #15) binds these
+    /// into the calldataHash so a front-runner can't mutate the pull
+    /// params without invalidating the oracle signature.
+    function _buildAttestationWithPull(
+        TrustSwapRouter.TrustTier swapperTier,
+        TrustSwapRouter.TrustTier recipientTier,
+        uint256 nonce,
+        address payer,
+        address tokenIn,
+        uint256 amountIn,
         bytes memory forwarded
     ) internal view returns (TrustSwapRouter.Attestation memory) {
         return
@@ -87,7 +117,9 @@ abstract contract TrustSwapRouterBaseTest is Test {
                 recipientTier: recipientTier,
                 expiresAt: block.timestamp + 5 minutes,
                 nonce: nonce,
-                calldataHash: keccak256(forwarded)
+                calldataHash: keccak256(
+                    abi.encode(payer, tokenIn, amountIn, forwarded)
+                )
             });
     }
 
@@ -102,5 +134,25 @@ abstract contract TrustSwapRouterBaseTest is Test {
         );
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(oraclePrivKey, signedHash);
         return abi.encodePacked(r, s, v);
+    }
+
+    /// @dev ETH-path wrapper — most tests inherit v1's calling convention,
+    ///      where `payer/tokenIn/amountIn` are zero and the contract uses
+    ///      `msg.value` directly. New ERC20 tests call `gatedSwap`
+    ///      directly with the fuller signature.
+    function _gatedSwapEth(
+        uint256 value,
+        bytes memory urCalldata,
+        TrustSwapRouter.Attestation memory att,
+        bytes memory sig
+    ) internal {
+        router.gatedSwap{value: value}(
+            address(0),
+            address(0),
+            0,
+            urCalldata,
+            att,
+            sig
+        );
     }
 }
