@@ -222,6 +222,59 @@ export function formatJsonl(event: AgentEvent): string {
 }
 
 // ---------------------------------------------------------------------------
+// /intents response shape (Phase 6b, TRU-42)
+//
+// Peers fetch this URL to discover what swaps the daemon is currently
+// willing to execute. The response is the union of the policy's enabled
+// intents (anything the daemon would self-trigger this tick) plus the
+// daemon's identity and a freshness timestamp. Disabled intents are
+// omitted: a peer asking "what would you do?" should see only the live
+// set, not the operator's drafts.
+//
+// Phase 6c will GET this from each peer's `agent-endpoint` ENS record,
+// gate the offer through @synthesis/resolver, attest, and settle via
+// gatedSwap. The shape is stable across that handover; the gate just
+// adds an `attestation` envelope around the intent before submission.
+// ---------------------------------------------------------------------------
+
+export interface AdvertisedIntent {
+  id: string;
+  kind: "swap";
+  tokenIn: string;
+  tokenOut: string;
+  amount: string;
+  recipient: string;
+}
+
+export interface IntentsResponse {
+  ensName: string;
+  kernelAddress: string;
+  listedAt: string;
+  intents: AdvertisedIntent[];
+}
+
+export function buildIntentsResponse(
+  policy: OperatingPolicy,
+  now: Date = new Date(),
+): IntentsResponse {
+  return {
+    ensName: policy.agent.ensName,
+    kernelAddress: policy.agent.kernelAddress,
+    listedAt: now.toISOString(),
+    intents: policy.intents
+      .filter((i) => i.enabled)
+      .map((i) => ({
+        id: i.id,
+        kind: i.kind,
+        tokenIn: i.tokenIn,
+        tokenOut: i.tokenOut,
+        amount: i.amount,
+        recipient: i.recipient,
+      })),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Status endpoint — last N JSONL events as JSON array
 // ---------------------------------------------------------------------------
 
@@ -284,7 +337,11 @@ export function parseStatusBind(bind: string): { host: string; port: number } {
   return { host, port };
 }
 
-function startStatusServer(bind: string, ring: EventRing): Server {
+function startStatusServer(
+  bind: string,
+  ring: EventRing,
+  getPolicy: () => OperatingPolicy,
+): Server {
   const { host, port } = parseStatusBind(bind);
   const server = createServer((req, res) => {
     if (req.url === "/healthz") {
@@ -296,6 +353,33 @@ function startStatusServer(bind: string, ring: EventRing): Server {
       const events = ring.snapshot();
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ events }));
+      return;
+    }
+    if (req.url === "/intents") {
+      // GET only. POST is reserved for a future "push an intent at me"
+      // direction; the Phase 6c flow is poll-only, so we keep the surface
+      // tight until there's a concrete consumer.
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        res.writeHead(405, {
+          "content-type": "text/plain",
+          allow: "GET, HEAD",
+        });
+        res.end("method not allowed");
+        return;
+      }
+      const policy = getPolicy();
+      // The endpoint is opt-in via `policy.listen`. Daemons without it
+      // get a 404 — same response as any other unknown path — so a peer
+      // probing without prior knowledge can't tell the difference between
+      // "this agent doesn't speak A2A" and "this URL was never wired up."
+      if (!policy.listen) {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("not found");
+        return;
+      }
+      const body = buildIntentsResponse(policy);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
       return;
     }
     res.writeHead(404, { "content-type": "text/plain" });
@@ -537,7 +621,10 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
     process.stdout.write(`${formatJsonl(e)}\n`);
   };
 
-  const statusServer = startStatusServer(statusBind, ring);
+  // `() => policy` is a closure over the let-binding, so the /intents
+  // route always serves the latest policy after a tick reload — no
+  // polling, no event-bus, no race against the next read.
+  const statusServer = startStatusServer(statusBind, ring, () => policy);
 
   emit({
     type: "agent.start",

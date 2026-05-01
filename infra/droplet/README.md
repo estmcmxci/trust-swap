@@ -70,6 +70,19 @@ First run creates the `trust-swap` system user, the
 `trust-swap-policy` group, and seeds `/etc/trust-swap/agent.env` and
 `/srv/trust-swap/policy.json` from sample fixtures. Re-runs are safe.
 
+To install a parallel daemon (e.g. the second listen-mode agent at
+`daemon.trustrust.eth`, TRU-42), pass `--instance <slug>`:
+
+```
+ssh trust-swap-droplet sudo /opt/trust-swap/infra/droplet/install.sh --instance trustrust
+```
+
+Each instance gets its own systemd unit (`trust-swap-agent-<slug>.service`),
+env file (`/etc/trust-swap/agent-<slug>.env`), and policy
+(`/srv/trust-swap/policy-<slug>.json`). The shared user, group, and
+`$HOME_DIR` are reused. Steps 4–7 below repeat per instance, swapping in
+the suffixed paths.
+
 ### 4. Place the daemon session-key file
 
 `scp` (or `rsync`) the locally-issued session-key file:

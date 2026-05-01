@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "agent": {
+    "ensName": "daemon.trustrust.eth",
+    "kernelAddress": "0xAbd8E2B64Bc5144aaF042a58270C34C8B5b945E3",
+    "sessionKeyPath": "~/.synthesis/daemon-trustrust-session-key.json"
+  },
+  "schedule": {
+    "intervalSec": 300
+  },
+  "intents": [
+    {
+      "id": "drip-usdc-to-weth",
+      "kind": "swap",
+      "tokenIn": "USDC",
+      "tokenOut": "WETH",
+      "amount": "1",
+      "recipient": "daemon.trustrust.eth",
+      "enabled": false
+    }
+  ],
+  "constraints": {
+    "maxDailySpendUsd": 25,
+    "minSecondsBetweenSwaps": 60,
+    "haltOnConsecutiveFailures": 3
+  },
+  "listen": {
+    "peers": ["daemon.emilemarcelagustin.eth"],
+    "pollIntervalSec": 30,
+    "maxConcurrentIntents": 2
+  }
+}

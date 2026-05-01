@@ -4,9 +4,41 @@
 # are left in place because they may contain encrypted keys, the live
 # policy file, and JSONL audit logs — destructive removal is the
 # operator's call.
+#
+# Multi-instance: pass `--instance <slug>` to remove a non-default daemon
+# (e.g. `--instance trustrust` to remove `trust-swap-agent-trustrust`).
 set -euo pipefail
 
-SERVICE_NAME=trust-swap-agent
+INSTANCE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --instance)
+      INSTANCE="${2:-}"
+      shift 2
+      ;;
+    --instance=*)
+      INSTANCE="${1#--instance=}"
+      shift
+      ;;
+    *)
+      echo "uninstall.sh: unknown arg $1" >&2
+      echo "Usage: uninstall.sh [--instance <slug>]" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -n "$INSTANCE" && ! "$INSTANCE" =~ ^[a-z0-9-]+$ ]]; then
+  echo "uninstall.sh: --instance must match [a-z0-9-]+ (got '$INSTANCE')" >&2
+  exit 1
+fi
+
+if [[ -n "$INSTANCE" ]]; then
+  SUFFIX="-$INSTANCE"
+else
+  SUFFIX=""
+fi
+SERVICE_NAME="trust-swap-agent$SUFFIX"
 RUN_USER=trust-swap
 POLICY_GROUP=trust-swap-policy
 HOME_DIR=/var/lib/trust-swap

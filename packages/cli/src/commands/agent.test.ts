@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ClassicQuote, OperatingPolicy, OrchestrateResult } from "@trust-swap/core";
 import {
   applyConstraints,
+  buildIntentsResponse,
   estimateSwapUsd,
   formatJsonl,
   initialAgentState,
@@ -351,5 +352,93 @@ describe("parseStatusBind", () => {
 
   it("rejects bracketed IPv6 missing the `:port` separator", () => {
     expect(() => parseStatusBind("[::1]18790")).toThrow(/expected ":port" after "\]"/);
+  });
+});
+
+describe("buildIntentsResponse", () => {
+  const FROZEN_NOW = new Date("2026-05-01T22:30:00.000Z");
+
+  it("returns the agent identity + only enabled intents", () => {
+    const policy = basePolicy({
+      listen: {
+        peers: ["daemon.peer.eth"],
+        pollIntervalSec: 30,
+        maxConcurrentIntents: 2,
+      },
+      intents: [
+        {
+          id: "live",
+          kind: "swap",
+          tokenIn: "USDC",
+          tokenOut: "WETH",
+          amount: "10",
+          recipient: "kernel.test.eth",
+          enabled: true,
+        },
+        {
+          id: "draft",
+          kind: "swap",
+          tokenIn: "USDC",
+          tokenOut: "DAI",
+          amount: "5",
+          recipient: "kernel.test.eth",
+          enabled: false,
+        },
+      ],
+    });
+    const res = buildIntentsResponse(policy, FROZEN_NOW);
+    expect(res).toEqual({
+      ensName: "daemon.test.eth",
+      kernelAddress: KERNEL,
+      listedAt: "2026-05-01T22:30:00.000Z",
+      intents: [
+        {
+          id: "live",
+          kind: "swap",
+          tokenIn: "USDC",
+          tokenOut: "WETH",
+          amount: "10",
+          recipient: "kernel.test.eth",
+        },
+      ],
+    });
+  });
+
+  it("returns an empty intents array when nothing is enabled", () => {
+    const policy = basePolicy({
+      intents: [
+        {
+          id: "a",
+          kind: "swap",
+          tokenIn: "USDC",
+          tokenOut: "WETH",
+          amount: "10",
+          recipient: "kernel.test.eth",
+          enabled: false,
+        },
+      ],
+    });
+    const res = buildIntentsResponse(policy, FROZEN_NOW);
+    expect(res.intents).toEqual([]);
+  });
+
+  it("does not leak the cron field — only the swap shape peers can act on", () => {
+    const policy = basePolicy({
+      intents: [
+        {
+          id: "a",
+          kind: "swap",
+          tokenIn: "USDC",
+          tokenOut: "WETH",
+          amount: "10",
+          recipient: "kernel.test.eth",
+          cron: "*/5 * * * *",
+          enabled: true,
+        },
+      ],
+    });
+    const res = buildIntentsResponse(policy, FROZEN_NOW);
+    expect(res.intents[0]).not.toHaveProperty("cron");
+    expect(res.intents[0]).not.toHaveProperty("enabled");
   });
 });
