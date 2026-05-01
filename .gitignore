@@ -16,3 +16,6 @@ CONTEXT-FOR-NEXT-SESSION.md
 *.swo
 .synthesis
 .wrangler
+PHASE-5-6-PLAN.md
+out/
+trust-swap-backups/

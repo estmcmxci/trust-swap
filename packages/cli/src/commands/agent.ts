@@ -1,10 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import {
+  scrypt,
+  createDecipheriv,
+  createHash,
+  timingSafeEqual,
+} from "node:crypto";
+import { promisify } from "node:util";
 import { parseUnits, createPublicClient, http, type Address, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
-import { createKernelAccountClient } from "@zerodev/sdk";
+import { createKernelAccount, createKernelAccountClient } from "@zerodev/sdk";
 import { getEntryPoint, KERNEL_V3_3 } from "@zerodev/sdk/constants";
+import { toMultiChainECDSAValidator } from "@zerodev/multi-chain-ecdsa-validator";
 import { deserializePermissionAccount } from "@zerodev/permissions";
 import { toECDSASigner } from "@zerodev/permissions/signers";
 import type { Batch, Signer } from "@synthesis/resolver";
@@ -183,6 +191,7 @@ export type AgentEvent =
       txHash?: string;
       decision: string;
       haltedAt?: string;
+      reason?: string;
       durationMs: number;
       success: boolean;
     }
@@ -310,6 +319,43 @@ async function buildDaemonSigner(
   rpcUrl: string,
   bundlerUrl: string,
 ): Promise<Signer> {
+  const publicClient = createPublicClient({ chain: base, transport: http(rpcUrl) });
+  const entryPoint = getEntryPoint("0.7");
+
+  // Owner-key fast path. When DAEMON_OWNER_KEYSTORE_PATH is in env, we
+  // decrypt the daemon's encrypted owner keystore (mode 0600 on disk)
+  // and sign userOps directly with the kernel's owner ECDSA validator
+  // — full sudo, no permission-validator install dance, no session-key
+  // serialization assumptions. Lower-trust than the session-key path
+  // (the daemon owns its kernel outright at this point), but the
+  // on-chain RiskPolicy + router gate are still enforced; the daemon
+  // just doesn't have an additional toCallPolicy ceiling on top.
+  //
+  // TODO(TRU-86): switch back to session-key signing once we figure
+  // out why deserializePermissionAccount's first userOp reverts in
+  // EntryPoint simulation against a freshly-deployed kernel.
+  const ownerKey = await maybeLoadOwnerKey();
+  if (ownerKey) {
+    const ownerAccount = privateKeyToAccount(ownerKey);
+    const sudoValidator = await toMultiChainECDSAValidator(publicClient, {
+      entryPoint,
+      kernelVersion: KERNEL_V3_3,
+      signer: ownerAccount,
+    });
+    const account = await createKernelAccount(publicClient, {
+      entryPoint,
+      index: 0n,
+      kernelVersion: KERNEL_V3_3,
+      plugins: { sudo: sudoValidator },
+    });
+    if (account.address.toLowerCase() !== expectedKernel.toLowerCase()) {
+      throw new Error(
+        `owner-key kernel ${account.address} ≠ policy.agent.kernelAddress ${expectedKernel}`,
+      );
+    }
+    return makeKernelSigner(account, publicClient, bundlerUrl);
+  }
+
   const expanded = sessionKeyPath.startsWith("~/")
     ? `${process.env.HOME ?? ""}${sessionKeyPath.slice(1)}`
     : sessionKeyPath;
@@ -328,10 +374,8 @@ async function buildDaemonSigner(
     );
   }
 
-  const publicClient = createPublicClient({ chain: base, transport: http(rpcUrl) });
   const sessionAccount = privateKeyToAccount(privateKey);
   const ecdsa = await toECDSASigner({ signer: sessionAccount });
-  const entryPoint = getEntryPoint("0.7");
   const account = await deserializePermissionAccount(
     publicClient,
     entryPoint,
@@ -345,6 +389,59 @@ async function buildDaemonSigner(
       `session key kernel ${account.address} ≠ policy.agent.kernelAddress ${expectedKernel}`,
     );
   }
+  return makeKernelSigner(account, publicClient, bundlerUrl);
+}
+
+// Decrypt the daemon's owner keystore in memory and return the private
+// key. Returns null when DAEMON_OWNER_KEYSTORE_PATH isn't set (caller
+// falls through to the session-key path).
+async function maybeLoadOwnerKey(): Promise<Hex | null> {
+  const path = process.env.DAEMON_OWNER_KEYSTORE_PATH;
+  if (!path) return null;
+  const password = process.env.DAEMON_OWNER_KEYSTORE_PASSWORD;
+  if (!password || password.length < 8) {
+    throw new Error(
+      "DAEMON_OWNER_KEYSTORE_PASSWORD missing or too short — owner-key path requires the keystore password in env",
+    );
+  }
+  const expanded = path.startsWith("~/")
+    ? `${process.env.HOME ?? ""}${path.slice(1)}`
+    : path;
+  if (!existsSync(expanded)) {
+    throw new Error(`daemon owner keystore not found: ${expanded}`);
+  }
+  const keystore = JSON.parse(readFileSync(expanded, "utf-8"));
+  const { kdfparams, ciphertext, cipherparams, mac, cipher, kdf } = keystore.crypto;
+  if (cipher !== "aes-256-ctr" || kdf !== "scrypt") {
+    throw new Error("unsupported keystore format");
+  }
+  const scryptAsync = promisify<Buffer | string, Buffer | string, number, Buffer>(scrypt);
+  const dk = await scryptAsync(
+    password,
+    Buffer.from(kdfparams.salt, "hex"),
+    kdfparams.dklen ?? 32,
+  );
+  const ct = Buffer.from(ciphertext, "hex");
+  const expectedMac = createHash("sha256")
+    .update(Buffer.concat([dk.subarray(16, 32), ct]))
+    .digest();
+  if (!timingSafeEqual(expectedMac, Buffer.from(mac, "hex"))) {
+    throw new Error("daemon owner keystore MAC mismatch — wrong password");
+  }
+  const decipher = createDecipheriv(
+    "aes-256-ctr",
+    dk,
+    Buffer.from(cipherparams.iv, "hex"),
+  );
+  return `0x${Buffer.concat([decipher.update(ct), decipher.final()]).toString("hex")}` as Hex;
+}
+
+// Common bundler-fee + execute wrapper used by both signing paths.
+function makeKernelSigner(
+  account: Awaited<ReturnType<typeof createKernelAccount>>,
+  publicClient: ReturnType<typeof createPublicClient>,
+  bundlerUrl: string,
+): Signer {
 
   const kernelClient = createKernelAccountClient({
     account,
@@ -623,6 +720,7 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
         txHash: result.txHash,
         decision: result.decision.allow ? "allow" : "deny",
         haltedAt: result.haltedAt,
+        reason: result.onboardingHint,
         durationMs: Date.now() - tickStartedAt,
         success,
       });

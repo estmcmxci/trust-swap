@@ -19,6 +19,7 @@
     "@namera-ai/sdk": "^0.1.0",
     "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
     "@trust-swap/core": "workspace:*",
+    "@zerodev/multi-chain-ecdsa-validator": "^5.4.5",
     "@zerodev/permissions": "^5.6.3",
     "@zerodev/sdk": "^5.5.8",
     "dotenv": "^17.3.1",
