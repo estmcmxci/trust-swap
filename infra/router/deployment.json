@@ -1,9 +1,9 @@
 {
   "chain": "base",
   "chainId": 8453,
-  "address": "0x98Ae714e7A5b34c861370Fe0D7F57c882c2FB47E",
+  "address": "0xa18E7eBD3E1B19067Ec3473d44847AfBd553679d",
   "deployer": "0x287B2526e78720bA5A4C0198422aa5907a83fa4F",
-  "deployBlock": 45437488,
+  "deployBlock": 45438541,
   "create2Salt": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "constructor": {
     "oraclePubkey": "0xB70d715b7ec382789c17834E8c5EA78548885106",
@@ -17,14 +17,24 @@
     "universalRouter": "0x6fF5693b99212Da76ad316178A184AB56D299b43",
     "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3"
   },
-  "deployedAt": "2026-05-01T18:30:00Z",
+  "deployedAt": "2026-05-01T20:11:00Z",
   "verifiedOnBaseScan": false,
-  "basescan": "https://basescan.org/address/0x98Ae714e7A5b34c861370Fe0D7F57c882c2FB47E",
-  "firstBroadcast": "https://basescan.org/tx/0xf584c0341edaec941a7b3c74d55066bfc37f45eb188dc81919a33461c6546863",
+  "basescan": "https://basescan.org/address/0xa18E7eBD3E1B19067Ec3473d44847AfBd553679d",
+  "firstBroadcast": "https://basescan.org/tx/0x9891144f7811421bcc3006659584b8058a3fde279eae8e558ca6df6516c44290",
   "supersedes": {
-    "address": "0x4aFa38bC5A775B08826f8644327C0c435fF5BD3a",
-    "deployTxHash": "0x43d99f283378a0dbbb37e2e47b7f5ff4f852cc6b853c6dd672e0f8eb5514f1bd",
-    "supersededReason": "TRU-86 — gatedSwap gained (address payer, address tokenIn, uint256 amountIn) so the router can pull ERC20 input from the kernel before forwarding to UR. v1's path forwarded UR calldata via low-level call with msg.sender=router, but UR's Permit2 transferFrom resolved payer=msg.sender (the router, holding zero tokens), reverting every ERC20-input swap. v2 also pre-approves Permit2 + UR for WETH/USDC in the constructor and exposes a permissionless setApprovals(token) for forward-compat. New constructor signature → new bytecode → new CREATE2 address.",
-    "firstBroadcast": "https://basescan.org/tx/0x45ee201299643adbd4bd8cabfc0825e730b511e063bb3c14414ecbc0f36fd228"
-  }
+    "address": "0x98Ae714e7A5b34c861370Fe0D7F57c882c2FB47E",
+    "deployTxHash": "0xf584c0341edaec941a7b3c74d55066bfc37f45eb188dc81919a33461c6546863",
+    "supersededReason": "Codex P1 #15 — gatedSwap recomputes the calldata hash as keccak256(abi.encode(payer, tokenIn, amountIn, urCalldata)) instead of keccak256(urCalldata). v2 only bound the UR shape, leaving room for a front-runner to replay a leaked attestation+sig with a larger amountIn (router would over-pull from att.swapper while UR consumed only the original encoded amount, stranding the excess and burning the nonce). Off-chain orchestrator + attestation interface mirror the new encoding; oracle is unchanged because it just echoes the caller-supplied hash. New hashing logic = new bytecode = new CREATE2 address."
+  },
+  "supersededBy": null,
+  "history": [
+    {
+      "address": "0x4aFa38bC5A775B08826f8644327C0c435fF5BD3a",
+      "supersededReason": "TRU-86 v2 — added (payer, tokenIn, amountIn) args + Permit2/UR pre-approvals so ERC20-input swaps work."
+    },
+    {
+      "address": "0x98Ae714e7A5b34c861370Fe0D7F57c882c2FB47E",
+      "supersededReason": "Codex P1 #15 — bind pull params into attestation hash."
+    }
+  ]
 }

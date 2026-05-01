@@ -10,7 +10,7 @@
   "sessionSignerAddress": "0xC593989FcF7EcEF1Ae0539d50C577cCC66D32ED1",
   "sessionKeyValidUntil": 1778261859,
   "sessionKeyValidUntilISO": "2026-05-08T17:37:39.000Z",
-  "routerPinned": "0x98Ae714e7A5b34c861370Fe0D7F57c882c2FB47E",
+  "routerPinned": "0xa18E7eBD3E1B19067Ec3473d44847AfBd553679d",
   "keystorePath": "~/.synthesis/daemon-keystore.json",
   "sessionKeyPath": "~/.synthesis/daemon-session-key.json",
   "riskPolicy": {

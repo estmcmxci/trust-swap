@@ -1,21 +1,25 @@
 #!/usr/bin/env tsx
-// Provision daemon.emilemarcelagustin.eth — Phase 5a (TRU-80)
+// Provision a TrustSwap daemon identity — Phase 5a (TRU-80) / Phase 6a (TRU-41)
 //
 // Single helper that batches the on-chain ceremony for a fresh agent
-// identity. Produces:
+// identity. The output paths are derived from `--ens-name` so different
+// daemons don't clobber each other's signing material:
 //
-//   ~/.synthesis/daemon-keystore.json     encrypted daemon owner key (mode 0600)
-//   ~/.synthesis/daemon-kernel.pub.json   public record for the daemon kernel
-//   ~/.synthesis/daemon-session-key.json  serialized session key (mode 0600)
-//   infra/identities/daemon.json          public identity record (committed)
+//   ~/.synthesis/<slug>-keystore.json       encrypted daemon owner key (mode 0600)
+//   ~/.synthesis/<slug>-kernel.pub.json     public record for the daemon kernel
+//   ~/.synthesis/<slug>-session-key.json    serialized session key (mode 0600)
+//   infra/identities/<slug>.json            public identity record (committed)
+//
+// `<slug>` defaults to `<subname>-<parent-first-label>`, except for the
+// original `daemon.emilemarcelagustin.eth` which keeps the legacy
+// `daemon` slug for backwards compat with the live droplet.
 //
 // One MetaMask interaction is required mid-script: the parent ENS owner
-// (`0xeb0ABB…5022`, controlling `emilemarcelagustin.eth`) must create the
-// subname `daemon.emilemarcelagustin.eth`, delegate it to the freshly-
-// generated daemon owner address, and fund the daemon kernel with ~$5 of
-// Base ETH. Once both confirm, the script resumes and finishes the rest
-// (set addr, publish RiskPolicy, issue session key, write public record)
-// signed by the daemon owner key alone.
+// must create the subname, delegate it to the freshly-generated daemon
+// owner address, and fund the daemon kernel with ~$5 of Base ETH. Once
+// both confirm, the script resumes and finishes the rest (set addr,
+// publish RiskPolicy, issue session key, write public record) signed by
+// the daemon owner key alone.
 //
 // Resumable: each phase checks if its output already exists and skips
 // unless `--force-<phase>` is passed. The end-state is `infra/identities/
@@ -98,6 +102,7 @@ interface Args {
   resume: boolean;
   force: boolean;
   dryRun: boolean;
+  paths: ProvisionPaths;
 }
 
 function parseArgs(): Args {
@@ -141,6 +146,7 @@ function parseArgs(): Args {
     resume: argv.includes("--resume"),
     force: argv.includes("--force"),
     dryRun: argv.includes("--dry-run"),
+    paths: pathsFor(ensName, subnameLabel, parentEnsName),
   };
 }
 
@@ -265,13 +271,53 @@ const RESOLVER_ABI = parseAbi([
 
 // ---------------------------------------------------------------------------
 // Paths
+//
+// Each provisioned daemon needs its own keystore + session-key + identity
+// record. The slug is derived from `--ens-name` so re-running for a
+// different ENS doesn't clobber the existing daemon's signing material.
+//
+// Backwards compat: the original `daemon.emilemarcelagustin.eth` was
+// provisioned before this scheme existed, so its files live at the
+// pre-slug paths (`daemon-keystore.json`, `daemon-kernel.pub.json`,
+// `daemon-session-key.json`, `infra/identities/daemon.json`). The
+// `pathsFor` helper keeps those names for that one ENS so re-runs
+// resolve the existing files — every other ENS gets a slug-prefixed
+// path like `daemon-trustrust-keystore.json` or `agent-b-trustrust-keystore.json`.
 // ---------------------------------------------------------------------------
 
 const HOME = homedir();
-const KEYSTORE_PATH = join(HOME, ".synthesis", "daemon-keystore.json");
-const KERNEL_PUB_PATH = join(HOME, ".synthesis", "daemon-kernel.pub.json");
-const SESSION_KEY_PATH = join(HOME, ".synthesis", "daemon-session-key.json");
-const IDENTITY_RECORD_PATH = join(process.cwd(), "infra", "identities", "daemon.json");
+
+interface ProvisionPaths {
+  keystore: string;
+  kernelPub: string;
+  sessionKey: string;
+  identityRecord: string;
+  slug: string;
+}
+
+function pathsFor(ensName: string, subnameLabel: string, parentEnsName: string): ProvisionPaths {
+  const isLegacyDaemon =
+    subnameLabel === "daemon" && parentEnsName === "emilemarcelagustin.eth";
+  const parentFirstLabel = parentEnsName.slice(0, parentEnsName.indexOf("."));
+  const slug = isLegacyDaemon
+    ? "daemon"
+    : `${subnameLabel}-${parentFirstLabel}`;
+  // Defensive — any caller-supplied ENS name should already be lowercased,
+  // but the slug rides into a filesystem path so guarantee it.
+  const safeSlug = slug.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  return {
+    slug: safeSlug,
+    keystore: join(HOME, ".synthesis", `${safeSlug}-keystore.json`),
+    kernelPub: join(HOME, ".synthesis", `${safeSlug}-kernel.pub.json`),
+    sessionKey: join(HOME, ".synthesis", `${safeSlug}-session-key.json`),
+    identityRecord: join(
+      process.cwd(),
+      "infra",
+      "identities",
+      `${safeSlug}.json`,
+    ),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Phase 1 — generate + encrypt daemon owner key, derive kernel address
@@ -285,8 +331,8 @@ interface Phase1Output {
 async function phase1IssueOwnerAndKernel(args: Args): Promise<Phase1Output> {
   console.log("\n— Phase 1: daemon owner key + kernel address —");
 
-  const hasKeystore = existsSync(KEYSTORE_PATH);
-  const hasPub = existsSync(KERNEL_PUB_PATH);
+  const hasKeystore = existsSync(args.paths.keystore);
+  const hasPub = existsSync(args.paths.kernelPub);
 
   // Partial Phase 1 state — the script crashed between writing the keystore
   // and the public record (or one was deleted). We can't safely re-derive
@@ -295,13 +341,13 @@ async function phase1IssueOwnerAndKernel(args: Args): Promise<Phase1Output> {
   // recovery instructions instead.
   if (hasKeystore !== hasPub) {
     throw new Error(
-      `partial Phase 1 state — keystore=${hasKeystore} pub=${hasPub}. Delete both files (${KEYSTORE_PATH}, ${KERNEL_PUB_PATH}) manually before re-running. Refusing to overwrite: a fresh owner key would orphan any funds sent to the original kernel.`,
+      `partial Phase 1 state — keystore=${hasKeystore} pub=${hasPub}. Delete both files (${args.paths.keystore}, ${args.paths.kernelPub}) manually before re-running. Refusing to overwrite: a fresh owner key would orphan any funds sent to the original kernel.`,
     );
   }
 
   if (hasKeystore && hasPub && !args.force) {
-    const pub = JSON.parse(readFileSync(KERNEL_PUB_PATH, "utf-8"));
-    console.log(`  reusing existing keystore at ${KEYSTORE_PATH}`);
+    const pub = JSON.parse(readFileSync(args.paths.kernelPub, "utf-8"));
+    console.log(`  reusing existing keystore at ${args.paths.keystore}`);
     console.log(`  daemon owner address:    ${pub.ownerAddress}`);
     console.log(`  daemon kernel address:   ${pub.kernelAddress}`);
     return {
@@ -312,7 +358,7 @@ async function phase1IssueOwnerAndKernel(args: Args): Promise<Phase1Output> {
 
   if (hasKeystore && args.force) {
     throw new Error(
-      `--force passed but ${KEYSTORE_PATH} exists. Refusing to clobber automatically — delete it manually first.`,
+      `--force passed but ${args.paths.keystore} exists. Refusing to clobber automatically — delete it manually first.`,
     );
   }
 
@@ -354,12 +400,12 @@ async function phase1IssueOwnerAndKernel(args: Args): Promise<Phase1Output> {
   });
   const daemonKernelAddress = kernelClient.account.address;
 
-  mkdirSync(dirname(KEYSTORE_PATH), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(args.paths.keystore), { recursive: true, mode: 0o700 });
   const encrypted = await encryptKey(ownerPrivateKey, password);
-  writeFileSync(KEYSTORE_PATH, JSON.stringify(encrypted, null, 2));
-  chmodSync(KEYSTORE_PATH, 0o600);
+  writeFileSync(args.paths.keystore, JSON.stringify(encrypted, null, 2));
+  chmodSync(args.paths.keystore, 0o600);
   writeFileSync(
-    KERNEL_PUB_PATH,
+    args.paths.kernelPub,
     JSON.stringify(
       {
         ownerAddress: ownerAccount.address,
@@ -380,8 +426,8 @@ async function phase1IssueOwnerAndKernel(args: Args): Promise<Phase1Output> {
 
   console.log(`  daemon owner address:    ${ownerAccount.address}`);
   console.log(`  daemon kernel address:   ${daemonKernelAddress}`);
-  console.log(`  encrypted keystore →     ${KEYSTORE_PATH}`);
-  console.log(`  public record →          ${KERNEL_PUB_PATH}`);
+  console.log(`  encrypted keystore →     ${args.paths.keystore}`);
+  console.log(`  public record →          ${args.paths.kernelPub}`);
 
   return {
     daemonOwnerAddress: ownerAccount.address,
@@ -416,23 +462,36 @@ async function phase2PromptAndVerify(args: Args, p1: Phase1Output): Promise<void
   const node = namehash(args.ensName);
   const nodeId = BigInt(node);
 
+  // Phase 3 needs the daemon owner EOA to send setAddr + setText on mainnet
+  // (signed by the keystore key, not the parent ENS owner). A fresh owner
+  // EOA has zero mainnet ETH, and Phase 3's `waitForTransactionReceipt`
+  // hangs forever on a tx the mempool rejected for insufficient funds.
+  // Min 0.0003 ETH covers ~50k-gas setText at ≤6 gwei mainnet base.
+  const OWNER_MAINNET_MIN = 300_000_000_000_000n; // 0.0003 ETH
+
   // Skip prompt if subname is already registered AND kernel is funded
+  // AND daemon owner has enough mainnet ETH for Phase 3.
   const owner = await readSubnameOwner(ensClient, node, nodeId);
   const kernelBalance = await baseClient.getBalance({
     address: p1.daemonKernelAddress,
   });
+  const ownerMainnetBalance = await ensClient.getBalance({
+    address: p1.daemonOwnerAddress,
+  });
   const expectedOwner = p1.daemonOwnerAddress.toLowerCase();
   const subnameOk = owner !== null && owner.toLowerCase() === expectedOwner;
   const fundingOk = kernelBalance >= parseEther("0.001");
+  const ownerOk = ownerMainnetBalance >= OWNER_MAINNET_MIN;
 
-  if (subnameOk && fundingOk) {
+  if (subnameOk && fundingOk && ownerOk) {
     console.log(`  ✓ subname ${args.ensName} already owned by ${p1.daemonOwnerAddress}`);
     console.log(`  ✓ kernel ${p1.daemonKernelAddress} already funded (${kernelBalance} wei)`);
+    console.log(`  ✓ daemon owner mainnet balance: ${ownerMainnetBalance} wei`);
     return;
   }
 
   console.log("");
-  console.log("Open https://app.ens.domains and complete two transactions:");
+  console.log("Open https://app.ens.domains and complete these transactions:");
   console.log("");
   console.log(`  1) Add subname under ${args.parentEnsName}`);
   console.log(`     • new label:   ${args.subnameLabel}`);
@@ -445,6 +504,11 @@ async function phase2PromptAndVerify(args: Args, p1: Phase1Output): Promise<void
   console.log("     • network:     Base mainnet");
   console.log("     • amount:      ~0.0015 ETH");
   console.log("");
+  console.log("  3) Fund the daemon owner on mainnet (for Phase 3 setAddr + setText)");
+  console.log(`     • destination: ${p1.daemonOwnerAddress}`);
+  console.log("     • network:     Ethereum mainnet");
+  console.log("     • amount:      ~0.001 ETH (≥ 0.0003 required)");
+  console.log("");
 
   if (!subnameOk && owner !== null) {
     console.log(`  current subname owner: ${owner} (expected ${p1.daemonOwnerAddress})`);
@@ -452,14 +516,20 @@ async function phase2PromptAndVerify(args: Args, p1: Phase1Output): Promise<void
   if (!fundingOk) {
     console.log(`  current kernel balance: ${kernelBalance} wei`);
   }
+  if (!ownerOk) {
+    console.log(`  current daemon owner mainnet balance: ${ownerMainnetBalance} wei`);
+  }
 
   const rl = createInterface({ input, output, terminal: true });
-  await rl.question("\nPress ENTER once both transactions confirm: ");
+  await rl.question("\nPress ENTER once all transactions confirm: ");
   rl.close();
 
   const ownerAfter = await readSubnameOwner(ensClient, node, nodeId);
   const balanceAfter = await baseClient.getBalance({
     address: p1.daemonKernelAddress,
+  });
+  const ownerMainnetAfter = await ensClient.getBalance({
+    address: p1.daemonOwnerAddress,
   });
   if (ownerAfter === null || ownerAfter.toLowerCase() !== expectedOwner) {
     throw new Error(
@@ -471,8 +541,14 @@ async function phase2PromptAndVerify(args: Args, p1: Phase1Output): Promise<void
       `daemon kernel balance ${balanceAfter} wei < 0.001 ETH — fund ${p1.daemonKernelAddress} on Base before continuing`,
     );
   }
+  if (ownerMainnetAfter < OWNER_MAINNET_MIN) {
+    throw new Error(
+      `daemon owner mainnet balance ${ownerMainnetAfter} wei < ${OWNER_MAINNET_MIN} (0.0003 ETH) — fund ${p1.daemonOwnerAddress} on Ethereum mainnet before continuing (Phase 3 setAddr + setText txs originate from this address)`,
+    );
+  }
   console.log(`  ✓ subname owner confirmed: ${ownerAfter}`);
   console.log(`  ✓ kernel funded: ${balanceAfter} wei on Base`);
+  console.log(`  ✓ daemon owner mainnet balance: ${ownerMainnetAfter} wei`);
 }
 
 async function readSubnameOwner(
@@ -557,7 +633,7 @@ async function phase3SetEnsRecords(args: Args, p1: Phase1Output): Promise<Phase3
     "Daemon keystore password: ",
     "SYNTHESIS_DAEMON_KEYSTORE_PASSWORD",
   );
-  const keystore = JSON.parse(readFileSync(KEYSTORE_PATH, "utf-8"));
+  const keystore = JSON.parse(readFileSync(args.paths.keystore, "utf-8"));
   let ownerPrivateKey: Hex | null = await decryptKeystore(keystore, password);
   const account = privateKeyToAccount(ownerPrivateKey);
   const walletClient = createWalletClient({
@@ -635,8 +711,8 @@ async function phase4IssueSessionKey(args: Args, p1: Phase1Output): Promise<Phas
   // silently leave the daemon running with a key bound to the dead router.
   const envRouterAddress = process.env.TRUST_SWAP_ROUTER_ADDRESS;
 
-  if (existsSync(SESSION_KEY_PATH) && !args.force) {
-    const existing = JSON.parse(readFileSync(SESSION_KEY_PATH, "utf-8"));
+  if (existsSync(args.paths.sessionKey) && !args.force) {
+    const existing = JSON.parse(readFileSync(args.paths.sessionKey, "utf-8"));
     const now = Math.floor(Date.now() / 1000);
     const sameKernel =
       existing.kernelAccount?.toLowerCase() === p1.daemonKernelAddress.toLowerCase();
@@ -644,7 +720,7 @@ async function phase4IssueSessionKey(args: Args, p1: Phase1Output): Promise<Phas
       typeof envRouterAddress === "string" &&
       existing.routerPinned?.toLowerCase() === envRouterAddress.toLowerCase();
     if (sameKernel && sameRouter && existing.validUntil > now) {
-      console.log(`  reusing valid session key at ${SESSION_KEY_PATH}`);
+      console.log(`  reusing valid session key at ${args.paths.sessionKey}`);
       console.log(`  session signer:   ${existing.sessionSigner}`);
       console.log(`  validUntil:       ${new Date(existing.validUntil * 1000).toISOString()}`);
       return {
@@ -683,7 +759,7 @@ async function phase4IssueSessionKey(args: Args, p1: Phase1Output): Promise<Phas
     "Daemon keystore password (for session key issue): ",
     "SYNTHESIS_DAEMON_KEYSTORE_PASSWORD",
   );
-  const keystore = JSON.parse(readFileSync(KEYSTORE_PATH, "utf-8"));
+  const keystore = JSON.parse(readFileSync(args.paths.keystore, "utf-8"));
   let ownerPrivateKey: Hex | null = await decryptKeystore(keystore, password);
   const ownerAccount = privateKeyToAccount(ownerPrivateKey);
 
@@ -761,7 +837,7 @@ async function phase4IssueSessionKey(args: Args, p1: Phase1Output): Promise<Phas
   const serialized = result.serializedAccounts[0].serializedAccount;
 
   writeFileSync(
-    SESSION_KEY_PATH,
+    args.paths.sessionKey,
     JSON.stringify(
       {
         version: 1,
@@ -782,12 +858,12 @@ async function phase4IssueSessionKey(args: Args, p1: Phase1Output): Promise<Phas
       2,
     ),
   );
-  chmodSync(SESSION_KEY_PATH, 0o600);
+  chmodSync(args.paths.sessionKey, 0o600);
 
   console.log(`  session signer:   ${sessionAccount.address}`);
   console.log(`  router pinned:    ${routerAddress}`);
   console.log(`  validUntil:       ${new Date(validUntil * 1000).toISOString()} (${validHours}h)`);
-  console.log(`  serialized →      ${SESSION_KEY_PATH}`);
+  console.log(`  serialized →      ${args.paths.sessionKey}`);
 
   return {
     sessionSignerAddress: sessionAccount.address,
@@ -820,8 +896,8 @@ function phase5WriteIdentityRecord(
     sessionKeyValidUntil: p4.validUntil,
     sessionKeyValidUntilISO: new Date(p4.validUntil * 1000).toISOString(),
     routerPinned: process.env.TRUST_SWAP_ROUTER_ADDRESS,
-    keystorePath: KEYSTORE_PATH.replace(HOME, "~"),
-    sessionKeyPath: SESSION_KEY_PATH.replace(HOME, "~"),
+    keystorePath: args.paths.keystore.replace(HOME, "~"),
+    sessionKeyPath: args.paths.sessionKey.replace(HOME, "~"),
     riskPolicy: {
       minCounterpartyTier: args.minTier,
       maxSizeUsd: args.maxSizeUsd,
@@ -843,9 +919,9 @@ function phase5WriteIdentityRecord(
     return;
   }
 
-  mkdirSync(dirname(IDENTITY_RECORD_PATH), { recursive: true });
-  writeFileSync(IDENTITY_RECORD_PATH, `${JSON.stringify(record, null, 2)}\n`);
-  console.log(`  ✓ ${IDENTITY_RECORD_PATH}`);
+  mkdirSync(dirname(args.paths.identityRecord), { recursive: true });
+  writeFileSync(args.paths.identityRecord, `${JSON.stringify(record, null, 2)}\n`);
+  console.log(`  ✓ ${args.paths.identityRecord}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -871,7 +947,7 @@ async function main() {
   console.log("\nDaemon provisioning complete.");
   console.log("");
   console.log("Next:");
-  console.log(`  • commit ${IDENTITY_RECORD_PATH}`);
+  console.log(`  • commit ${args.paths.identityRecord}`);
   console.log(
     "  • run `tru agent run --policy infra/droplet/sample-operating-policy.json --max-iterations 2` (TRU-38)",
   );
