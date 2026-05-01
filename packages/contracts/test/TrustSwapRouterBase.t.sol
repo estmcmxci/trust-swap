@@ -42,7 +42,12 @@ abstract contract TrustSwapRouterBaseTest is Test {
 
     function setUp() public virtual {
         oraclePubkey = vm.addr(oraclePrivKey);
-        router = new TrustSwapRouter(oraclePubkey, feeRecipient);
+        // No initial approvals in tests — Permit2 / WETH / USDC have no
+        // bytecode in a fresh forge environment, so the constructor's
+        // approval calls would revert. ERC20-input tests etch their own
+        // mocks and call `setApprovals` after deploy.
+        address[] memory empty;
+        router = new TrustSwapRouter(oraclePubkey, feeRecipient, empty);
 
         // Etch the mock UR's runtime code at the canonical Base address so
         // `gatedSwap` can call it without us deploying a real Universal
@@ -102,5 +107,25 @@ abstract contract TrustSwapRouterBaseTest is Test {
         );
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(oraclePrivKey, signedHash);
         return abi.encodePacked(r, s, v);
+    }
+
+    /// @dev ETH-path wrapper — most tests inherit v1's calling convention,
+    ///      where `payer/tokenIn/amountIn` are zero and the contract uses
+    ///      `msg.value` directly. New ERC20 tests call `gatedSwap`
+    ///      directly with the fuller signature.
+    function _gatedSwapEth(
+        uint256 value,
+        bytes memory urCalldata,
+        TrustSwapRouter.Attestation memory att,
+        bytes memory sig
+    ) internal {
+        router.gatedSwap{value: value}(
+            address(0),
+            address(0),
+            0,
+            urCalldata,
+            att,
+            sig
+        );
     }
 }

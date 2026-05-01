@@ -166,35 +166,48 @@ async function main() {
   });
 
   // --- Bootstrap call batch ------------------------------------------------
-  // Three atomic calls, signed by the owner key:
-  //   1. Self-transfer 0 wei — deploys the kernel via factory (idempotent
-  //      after deploy; ZeroDev's kernel client adds factoryData on first
-  //      use only)
-  //   2. WETH.approve(Permit2, max) — Universal Router pulls input tokens
-  //      via Permit2; without this, every swap reverts with
-  //      `UniversalRouterCallFailed(0xd81b2f2e…)` because Permit2 has no
-  //      allowance to spend the kernel's WETH
-  //   3. USDC.approve(Permit2, max) — same reason, for the reverse swap
-  //      direction (when the daemon eventually swaps USDC out)
+  // One atomic batch, signed by the owner key. Idempotent — re-running
+  // sets allowances back to MAX (no-op for already-approved tokens).
+  //   1. Self-transfer 0 wei — deploys the kernel via factory on first
+  //      run; subsequent runs no-op.
+  //   2. WETH/USDC.approve(Permit2, max) — Universal Router pulls input
+  //      tokens via Permit2 when called directly. Kept for the manual
+  //      `tru swap` path which calls UR straight from the kernel.
+  //   3. WETH/USDC.approve(TrustSwapRouter, max) — TRU-86. The v2
+  //      gatedSwap pulls `amountIn` from the kernel via `transferFrom`
+  //      so the router (rather than the kernel) is UR's payer. Without
+  //      this approval, ERC20-input gatedSwap reverts at the
+  //      `safeTransferFrom` step.
   const PERMIT2: Address = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
   const WETH: Address = "0x4200000000000000000000000000000000000006";
   const USDC: Address = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913";
+  const trustSwapRouter = process.env.TRUST_SWAP_ROUTER_ADDRESS as
+    | Address
+    | undefined;
+  if (!trustSwapRouter) {
+    throw new Error(
+      "TRUST_SWAP_ROUTER_ADDRESS not set — bootstrap can't approve the router without it",
+    );
+  }
+  console.log(`  router: ${trustSwapRouter}`);
   const ERC20_APPROVE = parseAbi([
     "function approve(address spender, uint256 amount) returns (bool)",
   ]);
   const MAX = (1n << 256n) - 1n;
-  const approveData = (token: Address) =>
+  const approveData = (spender: Address) =>
     encodeFunctionData({
       abi: ERC20_APPROVE,
       functionName: "approve",
-      args: [PERMIT2, MAX],
+      args: [spender, MAX],
     });
 
   const userOpHash = await kernelClient.sendUserOperation({
     calls: [
       { to: expectedKernel, value: 0n, data: "0x" },
-      { to: WETH, value: 0n, data: approveData(WETH) },
-      { to: USDC, value: 0n, data: approveData(USDC) },
+      { to: WETH, value: 0n, data: approveData(PERMIT2) },
+      { to: USDC, value: 0n, data: approveData(PERMIT2) },
+      { to: WETH, value: 0n, data: approveData(trustSwapRouter) },
+      { to: USDC, value: 0n, data: approveData(trustSwapRouter) },
     ],
   });
   console.log(`  userOp hash: ${userOpHash}`);
@@ -212,7 +225,9 @@ async function main() {
 
   ownerPrivateKey = null;
 
-  console.log(`  ✓ kernel deployed + WETH/USDC approved to Permit2`);
+  console.log(
+    `  ✓ kernel deployed + WETH/USDC approved to Permit2 + TrustSwapRouter`,
+  );
   console.log("");
   console.log("Done. Restart the daemon — session-key userOps should now succeed:");
   console.log("  ssh root@100.121.243.97 systemctl restart trust-swap-agent");

@@ -717,7 +717,7 @@ async function phase4IssueSessionKey(args: Args, p1: Phase1Output): Promise<Phas
   // ETH (matches the manual-swap session key) since the on-chain router
   // already enforces the dollar cap; this is just gas headroom.
   const ROUTER_ABI = parseAbi([
-    "function gatedSwap(bytes universalRouterCalldata, (address swapper, address recipient, uint8 swapperTier, uint8 recipientTier, uint256 expiresAt, uint256 nonce, bytes32 calldataHash) attestation, bytes oracleSig) external payable",
+    "function gatedSwap(address payer, address tokenIn, uint256 amountIn, bytes universalRouterCalldata, (address swapper, address recipient, uint8 swapperTier, uint8 recipientTier, uint256 expiresAt, uint256 nonce, bytes32 calldataHash) attestation, bytes oracleSig) external payable",
   ]);
   const callPolicy = toCallPolicy({
     policyVersion: CallPolicyVersion.V0_0_4,
