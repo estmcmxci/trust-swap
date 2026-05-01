@@ -77,11 +77,36 @@ abstract contract TrustSwapRouterBaseTest is Test {
     }
 
     /// Variant for tests that forward a non-default calldata payload —
-    /// the calldataHash in the attestation must match exactly.
+    /// the calldataHash in the attestation must match exactly. Defaults
+    /// to the ETH-path pull params `(0,0,0)` to match `_gatedSwapEth`.
     function _buildAttestationWithCalldata(
         TrustSwapRouter.TrustTier swapperTier,
         TrustSwapRouter.TrustTier recipientTier,
         uint256 nonce,
+        bytes memory forwarded
+    ) internal view returns (TrustSwapRouter.Attestation memory) {
+        return _buildAttestationWithPull(
+            swapperTier,
+            recipientTier,
+            nonce,
+            address(0),
+            address(0),
+            0,
+            forwarded
+        );
+    }
+
+    /// Variant for ERC20-input tests that forward a `(payer, tokenIn,
+    /// amountIn)` triple. The on-chain check (Codex P1 #15) binds these
+    /// into the calldataHash so a front-runner can't mutate the pull
+    /// params without invalidating the oracle signature.
+    function _buildAttestationWithPull(
+        TrustSwapRouter.TrustTier swapperTier,
+        TrustSwapRouter.TrustTier recipientTier,
+        uint256 nonce,
+        address payer,
+        address tokenIn,
+        uint256 amountIn,
         bytes memory forwarded
     ) internal view returns (TrustSwapRouter.Attestation memory) {
         return
@@ -92,7 +117,9 @@ abstract contract TrustSwapRouterBaseTest is Test {
                 recipientTier: recipientTier,
                 expiresAt: block.timestamp + 5 minutes,
                 nonce: nonce,
-                calldataHash: keccak256(forwarded)
+                calldataHash: keccak256(
+                    abi.encode(payer, tokenIn, amountIn, forwarded)
+                )
             });
     }
 

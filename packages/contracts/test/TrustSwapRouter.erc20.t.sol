@@ -42,10 +42,13 @@ contract TrustSwapRouterErc20Test is TrustSwapRouterBaseTest {
         assertTrue(router.approvalsReady(address(token)), "approvalsReady");
 
         bytes memory urCalldata = hex"deadbeef";
-        TrustSwapRouter.Attestation memory att = _buildAttestationWithCalldata(
+        TrustSwapRouter.Attestation memory att = _buildAttestationWithPull(
             TrustSwapRouter.TrustTier.Full,
             TrustSwapRouter.TrustTier.Full,
             900,
+            swapper,
+            address(token),
+            amountIn,
             urCalldata
         );
         bytes memory sig = _signAttestation(att);
@@ -75,11 +78,17 @@ contract TrustSwapRouterErc20Test is TrustSwapRouterBaseTest {
 
         bytes memory urCalldata = hex"abcd";
         // Attestation is over `swapper` (default fixture) — but the
-        // caller passes `impostor` as payer. Router rejects.
-        TrustSwapRouter.Attestation memory att = _buildAttestationWithCalldata(
+        // caller passes `impostor` as payer. The attestation hash binds
+        // `payer = impostor` so the signature recovers cleanly; the
+        // PayerNotAttestedSwapper check (step 9) is what rejects, not
+        // the calldata-hash check.
+        TrustSwapRouter.Attestation memory att = _buildAttestationWithPull(
             TrustSwapRouter.TrustTier.Full,
             TrustSwapRouter.TrustTier.Full,
             901,
+            impostor,
+            address(token),
+            amountIn,
             urCalldata
         );
         bytes memory sig = _signAttestation(att);
@@ -99,10 +108,13 @@ contract TrustSwapRouterErc20Test is TrustSwapRouterBaseTest {
         // is non-zero (caller error), the router skips the pull rather
         // than reverting — preserves v1 behavior.
         bytes memory urCalldata = hex"cafe";
-        TrustSwapRouter.Attestation memory att = _buildAttestationWithCalldata(
+        TrustSwapRouter.Attestation memory att = _buildAttestationWithPull(
             TrustSwapRouter.TrustTier.Full,
             TrustSwapRouter.TrustTier.Full,
             902,
+            address(0),
+            address(token),
+            999,
             urCalldata
         );
         bytes memory sig = _signAttestation(att);
@@ -113,14 +125,69 @@ contract TrustSwapRouterErc20Test is TrustSwapRouterBaseTest {
         assertEq(token.balanceOf(address(router)), 0, "no pull on payer=0");
     }
 
+    /// @notice Codex P1 #15 regression — a front-runner who sees a valid
+    ///         attestation+sig for `(payer, tokenIn, amountIn=A)` cannot
+    ///         resubmit it with `amountIn=A'` to over-pull. The on-chain
+    ///         hash now binds the pull triple, so any mutation makes
+    ///         `keccak256(abi.encode(payer, tokenIn, amountIn', urCalldata))`
+    ///         diverge from `att.calldataHash`.
+    function test_RevertWhen_FrontRunnerInflatesAmountIn() public {
+        uint256 attestedAmount = 1_000;
+        uint256 inflatedAmount = 10_000;
+        token.mint(swapper, inflatedAmount);
+        // Production kernel approves max — front-run mutation is only
+        // bounded by the attestation hash, not the allowance.
+        vm.prank(swapper);
+        token.approve(address(router), type(uint256).max);
+        router.setApprovals(address(token));
+
+        bytes memory urCalldata = hex"abad1dea";
+        // Oracle attests the original (smaller) amountIn.
+        TrustSwapRouter.Attestation memory att = _buildAttestationWithPull(
+            TrustSwapRouter.TrustTier.Full,
+            TrustSwapRouter.TrustTier.Full,
+            904,
+            swapper,
+            address(token),
+            attestedAmount,
+            urCalldata
+        );
+        bytes memory sig = _signAttestation(att);
+
+        // Attacker resubmits with a larger amountIn but the same
+        // attestation+sig — must revert at the binding-hash check.
+        bytes32 expected = att.calldataHash;
+        bytes32 actual = keccak256(
+            abi.encode(swapper, address(token), inflatedAmount, urCalldata)
+        );
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TrustSwapRouter.CalldataHashMismatch.selector,
+                expected,
+                actual
+            )
+        );
+        router.gatedSwap(
+            swapper,
+            address(token),
+            inflatedAmount,
+            urCalldata,
+            att,
+            sig
+        );
+    }
+
     function test_AmountZero_NoPullEvenIfPayerNonzero() public {
         // Symmetry of the previous test — `amountIn == 0` means "nothing
         // to pull", regardless of payer.
         bytes memory urCalldata = hex"feed";
-        TrustSwapRouter.Attestation memory att = _buildAttestationWithCalldata(
+        TrustSwapRouter.Attestation memory att = _buildAttestationWithPull(
             TrustSwapRouter.TrustTier.Full,
             TrustSwapRouter.TrustTier.Full,
             903,
+            swapper,
+            address(token),
+            0,
             urCalldata
         );
         bytes memory sig = _signAttestation(att);

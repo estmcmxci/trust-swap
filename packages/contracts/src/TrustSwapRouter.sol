@@ -67,11 +67,16 @@ contract TrustSwapRouter {
     /// @notice Canonical attestation bytes the oracle signs over
     ///         `keccak256(abi.encode(att))`. The same shape is encoded by
     ///         `buildGatedSwapCalldata()` off-chain.
-    /// @dev    `calldataHash` binds the attestation to a specific
-    ///         `universalRouterCalldata` payload — without it, a caller
-    ///         could replay a valid attestation against a different swap
-    ///         (different tokens, different amounts, different
-    ///         pools), bypassing the off-chain checks the oracle ran.
+    /// @dev    `calldataHash` binds the attestation to the FULL gated-swap
+    ///         payload — `keccak256(abi.encode(payer, tokenIn, amountIn,
+    ///         universalRouterCalldata))`. Without binding the pull params
+    ///         too, a front-runner who saw a valid attestation+sig in flight
+    ///         could resubmit it with a larger `amountIn`: the router would
+    ///         pull the larger amount from `att.swapper` (whose kernel had
+    ///         approved max), the UR call would still succeed using the
+    ///         original amount encoded in the calldata, and the excess
+    ///         would be stranded in the router while the nonce burned.
+    ///         (Codex P1 #15.)
     struct Attestation {
         address swapper;
         address recipient;
@@ -223,10 +228,14 @@ contract TrustSwapRouter {
 
         // 2. Calldata binding — the oracle signed an attestation that
         //    includes a hash of the EXACT calldata it expected the caller
-        //    to forward. If the calldata here doesn't match, the
-        //    attestation is being replayed against a different swap
-        //    (different tokens, amounts, pools, recipient overrides).
-        bytes32 actualCalldataHash = keccak256(universalRouterCalldata);
+        //    to forward AND the pull params (payer, tokenIn, amountIn).
+        //    Hashing only `universalRouterCalldata` would let a front-runner
+        //    replay a valid attestation+sig with a larger `amountIn`,
+        //    over-pulling from `att.swapper` while UR still consumed only
+        //    the original amount encoded in the calldata. (Codex P1 #15.)
+        bytes32 actualCalldataHash = keccak256(
+            abi.encode(payer, tokenIn, amountIn, universalRouterCalldata)
+        );
         if (actualCalldataHash != att.calldataHash) {
             revert CalldataHashMismatch(att.calldataHash, actualCalldataHash);
         }
