@@ -462,12 +462,15 @@ async function phase2PromptAndVerify(args: Args, p1: Phase1Output): Promise<void
   const node = namehash(args.ensName);
   const nodeId = BigInt(node);
 
-  // Phase 3 needs the daemon owner EOA to send setAddr + setText on mainnet
-  // (signed by the keystore key, not the parent ENS owner). A fresh owner
-  // EOA has zero mainnet ETH, and Phase 3's `waitForTransactionReceipt`
-  // hangs forever on a tx the mempool rejected for insufficient funds.
-  // Min 0.0003 ETH covers ~50k-gas setText at ≤6 gwei mainnet base.
-  const OWNER_MAINNET_MIN = 300_000_000_000_000n; // 0.0003 ETH
+  // Phase 3 sends two mainnet txs from the daemon owner EOA (signed by
+  // the keystore key, not the parent ENS owner): setAddr + setText.
+  // A fresh owner EOA has zero mainnet ETH, and Phase 3's
+  // `waitForTransactionReceipt` hangs forever on a tx the mempool
+  // rejected for insufficient funds. This floor is a fail-fast tripwire
+  // for 0-balance EOAs, not a precise gas estimate — at current sub-gwei
+  // mainnet base fees both writes cost <0.00005 ETH, so 0.0006 has
+  // ~10x headroom; a real gas spike will revert at broadcast either way.
+  const OWNER_MAINNET_MIN = 600_000_000_000_000n; // 0.0006 ETH
 
   // Skip prompt if subname is already registered AND kernel is funded
   // AND daemon owner has enough mainnet ETH for Phase 3.
@@ -507,7 +510,7 @@ async function phase2PromptAndVerify(args: Args, p1: Phase1Output): Promise<void
   console.log("  3) Fund the daemon owner on mainnet (for Phase 3 setAddr + setText)");
   console.log(`     • destination: ${p1.daemonOwnerAddress}`);
   console.log("     • network:     Ethereum mainnet");
-  console.log("     • amount:      ~0.001 ETH (≥ 0.0003 required)");
+  console.log("     • amount:      ~0.001 ETH (≥ 0.0006 required, covers setAddr + setText)");
   console.log("");
 
   if (!subnameOk && owner !== null) {
@@ -543,7 +546,7 @@ async function phase2PromptAndVerify(args: Args, p1: Phase1Output): Promise<void
   }
   if (ownerMainnetAfter < OWNER_MAINNET_MIN) {
     throw new Error(
-      `daemon owner mainnet balance ${ownerMainnetAfter} wei < ${OWNER_MAINNET_MIN} (0.0003 ETH) — fund ${p1.daemonOwnerAddress} on Ethereum mainnet before continuing (Phase 3 setAddr + setText txs originate from this address)`,
+      `daemon owner mainnet balance ${ownerMainnetAfter} wei < ${OWNER_MAINNET_MIN} (0.0006 ETH) — fund ${p1.daemonOwnerAddress} on Ethereum mainnet before continuing (Phase 3 setAddr + setText txs originate from this address)`,
     );
   }
   console.log(`  ✓ subname owner confirmed: ${ownerAfter}`);
