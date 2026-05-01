@@ -29,13 +29,15 @@ set -euo pipefail
 # --- Constants ------------------------------------------------------------
 POLICY_GROUP=trust-swap-policy
 OPENCLAW_USER="${OPENCLAW_USER:-openclaw}"
-OPENCLAW_HOME="$(getent passwd "$OPENCLAW_USER" 2>/dev/null | awk -F: '{print $6}')"
-OPENCLAW_SKILLS_DIR="${OPENCLAW_SKILLS_DIR:-${OPENCLAW_HOME}/.openclaw/skills}"
 
 THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SKILL_SRC="$THIS_DIR/trust-swap-policy.md"
 
 # --- Pre-flight ----------------------------------------------------------
+# Run user-existence checks BEFORE any `getent passwd` / `id` lookups
+# against $OPENCLAW_USER. Under `set -euo pipefail`, those lookups abort
+# the script with an opaque pipeline failure when the account is
+# missing, swallowing the actionable error messages below.
 if [[ $EUID -ne 0 ]]; then
   echo "install.sh must run as root (use sudo)" >&2
   exit 1
@@ -57,9 +59,26 @@ if [[ ! -f "$SKILL_SRC" ]]; then
   exit 1
 fi
 
-if [[ -z "$OPENCLAW_HOME" ]]; then
-  echo "could not resolve home directory for $OPENCLAW_USER" >&2
-  exit 1
+# --- Resolve user-derived paths -----------------------------------------
+# Read the account's real primary group from its passwd record rather
+# than assuming a same-named group. Service accounts created with
+# `useradd -g <other>` have a primary group that differs from the
+# username, and `install -d -g "$OPENCLAW_USER"` would fail in that
+# case and abort the installer before the skill ever gets linked.
+OPENCLAW_GROUP="$(id -gn "$OPENCLAW_USER")"
+
+# Only resolve the home dir if the caller hasn't pinned the skills
+# directory explicitly. Saves a getent round-trip and means a custom
+# skills location works even if the account has no home (e.g. nologin
+# service accounts with `/nonexistent`).
+if [[ -z "${OPENCLAW_SKILLS_DIR:-}" ]]; then
+  OPENCLAW_HOME="$(getent passwd "$OPENCLAW_USER" | awk -F: '{print $6}')"
+  if [[ -z "$OPENCLAW_HOME" ]]; then
+    echo "could not resolve home directory for $OPENCLAW_USER —" >&2
+    echo "set OPENCLAW_SKILLS_DIR=<path> to override" >&2
+    exit 1
+  fi
+  OPENCLAW_SKILLS_DIR="${OPENCLAW_HOME}/.openclaw/skills"
 fi
 
 # --- 1) Group membership -------------------------------------------------
@@ -69,7 +88,7 @@ usermod -a -G "$POLICY_GROUP" "$OPENCLAW_USER"
 echo "  + $OPENCLAW_USER joined group $POLICY_GROUP"
 
 # --- 2) Symlink skill ----------------------------------------------------
-install -d -m 0755 -o "$OPENCLAW_USER" -g "$OPENCLAW_USER" "$OPENCLAW_SKILLS_DIR"
+install -d -m 0755 -o "$OPENCLAW_USER" -g "$OPENCLAW_GROUP" "$OPENCLAW_SKILLS_DIR"
 ln -sfn "$SKILL_SRC" "$OPENCLAW_SKILLS_DIR/trust-swap-policy.md"
 echo "  + linked $SKILL_SRC → $OPENCLAW_SKILLS_DIR/trust-swap-policy.md"
 
