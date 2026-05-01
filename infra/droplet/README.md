@@ -160,13 +160,22 @@ Each tick where `pollIntervalSec` has elapsed, the daemon resolves each
 peer's `agent-endpoint` ENS record, fetches `/intents`, and emits a
 `peer.poll` event followed by one `peer.intent-evaluated` per advertised
 intent (`decision: "match" | "decline"`). For `match` decisions the
-daemon then re-checks the same per-tick constraints
-(`minSecondsBetweenSwaps`, daily spend cap, halt) and either settles the
-swap via `gatedSwap` — recipient pulled from the peer's intent, not the
-local one — emitting `peer.intent-settled`, or skips with reason via
-`peer.intent-skipped`. The bidirectional RiskPolicy gate is enforced at
-oracle-attestation time, so a swap that would deliver to a peer below
-this daemon's `minCounterpartyTier` is rejected before it broadcasts.
+daemon re-checks the same per-tick constraints
+(`minSecondsBetweenSwaps`, daily spend cap, halt) and emits one of:
+
+- `peer.intent-settled` — `orchestrate` returned. `decision: "allow"`
+  with a `txHash` is a successful broadcast; `decision: "deny"` is a
+  real oracle/policy refusal.
+- `peer.intent-skipped` — constraints blocked the settlement attempt
+  (mirrors `tick.skipped`'s `ConstraintBlockReason`).
+- `peer.intent-error` — settlement threw before `orchestrate` returned
+  (token parse, ENS lookup, RPC outage). Mirrors `tick.error` so an
+  audit tool can filter infrastructure failures from policy denials
+  by event type alone.
+
+The bidirectional RiskPolicy gate is enforced at oracle-attestation
+time, so a swap that would deliver to a peer below this daemon's
+`minCounterpartyTier` is rejected before it broadcasts.
 
 Settlement updates the same state the regular intent path uses, so
 combined throughput respects `minSecondsBetweenSwaps` — typically one

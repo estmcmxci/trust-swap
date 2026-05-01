@@ -247,6 +247,10 @@ export type AgentEvent =
       reason: ConstraintBlockReason;
     }
   | {
+      // Settlement attempt completed — `orchestrate` returned, may or may
+      // not have broadcast a tx. `decision` is the real policy/oracle
+      // outcome ("allow" | "deny"); a deny here is a real refusal, not
+      // an infrastructure failure (those go to `peer.intent-error`).
       type: "peer.intent-settled";
       ts: string;
       iter: number;
@@ -257,11 +261,28 @@ export type AgentEvent =
       amount: string;
       recipient: string;
       txHash?: string;
-      decision: string;
+      decision: "allow" | "deny";
       haltedAt?: string;
-      message?: string;
+      reason?: string;
       durationMs: number;
       success: boolean;
+    }
+  | {
+      // Settlement threw before `orchestrate` returned — token parse,
+      // ENS lookup, RPC outage, etc. Mirrors `tick.error` so an audit
+      // tool can filter infrastructure failures from policy denials by
+      // event type alone.
+      type: "peer.intent-error";
+      ts: string;
+      iter: number;
+      peer: string;
+      peerIntentId: string;
+      tokenIn: string;
+      tokenOut: string;
+      amount: string;
+      recipient: string;
+      message: string;
+      durationMs: number;
     };
 
 export function formatJsonl(event: AgentEvent): string {
@@ -981,23 +1002,42 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
                 settleErr = err instanceof Error ? err.message : String(err);
               }
 
-              emit({
-                type: "peer.intent-settled",
-                ts: new Date().toISOString(),
-                iter: tickCount,
-                peer: r.peerEnsName,
-                peerIntentId: peerIntent.id,
-                tokenIn: peerIntent.tokenIn,
-                tokenOut: peerIntent.tokenOut,
-                amount: peerIntent.amount,
-                recipient: peerIntent.recipient,
-                txHash: settleResult?.txHash,
-                decision: settleResult?.decision.allow ? "allow" : "deny",
-                haltedAt: settleResult?.haltedAt,
-                message: settleErr ?? settleResult?.onboardingHint,
-                durationMs: Date.now() - settleStartedAt,
-                success: settleSuccess,
-              });
+              if (settleErr !== null) {
+                // Infrastructure failure — emit the dedicated error event
+                // instead of synthesizing a fake `decision: "deny"` on
+                // peer.intent-settled.
+                emit({
+                  type: "peer.intent-error",
+                  ts: new Date().toISOString(),
+                  iter: tickCount,
+                  peer: r.peerEnsName,
+                  peerIntentId: peerIntent.id,
+                  tokenIn: peerIntent.tokenIn,
+                  tokenOut: peerIntent.tokenOut,
+                  amount: peerIntent.amount,
+                  recipient: peerIntent.recipient,
+                  message: settleErr,
+                  durationMs: Date.now() - settleStartedAt,
+                });
+              } else if (settleResult) {
+                emit({
+                  type: "peer.intent-settled",
+                  ts: new Date().toISOString(),
+                  iter: tickCount,
+                  peer: r.peerEnsName,
+                  peerIntentId: peerIntent.id,
+                  tokenIn: peerIntent.tokenIn,
+                  tokenOut: peerIntent.tokenOut,
+                  amount: peerIntent.amount,
+                  recipient: peerIntent.recipient,
+                  txHash: settleResult.txHash,
+                  decision: settleResult.decision.allow ? "allow" : "deny",
+                  haltedAt: settleResult.haltedAt,
+                  reason: settleResult.onboardingHint,
+                  durationMs: Date.now() - settleStartedAt,
+                  success: settleSuccess,
+                });
+              }
 
               // Mirror tick-swap state updates so combined throughput
               // honors all constraints. Use settleNow (the snapshot the
