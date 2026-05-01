@@ -131,6 +131,39 @@ Status endpoint:
 ```
 curl http://100.121.243.97:18790/healthz   # → ok
 curl http://100.121.243.97:18790/events    # last 100 events as JSON
+curl http://100.121.243.97:18790/intents   # 404 unless policy.listen is set (Phase 6c)
+```
+
+### A2A discovery (Phase 6c, optional)
+
+The daemon advertises its discovery endpoint via the ENSIP-26
+`agent-endpoint` ENS text record. **This is a base URL** — the same
+record is consumed by `@trust-swap/core`'s RiskPolicy resolver
+(`<endpoint>/policy`) and by the A2A peer poll
+(`<endpoint>/intents`). Set it without a path component, e.g.
+`http://100.121.243.97:18790`, and the consumers append the right
+sub-path. The repo's `scripts/set-agent-endpoint.ts` writes whatever
+URL you pass it.
+
+To turn on the peer-poll loop on a daemon, add a `listen` block to its
+operating policy and restart:
+
+```json
+"listen": {
+  "peers": ["daemon.trustrust.eth"],
+  "pollIntervalSec": 30,
+  "maxConcurrentIntents": 2
+}
+```
+
+Each tick where `pollIntervalSec` has elapsed, the daemon resolves each
+peer's `agent-endpoint` ENS record, fetches `/intents`, and emits a
+`peer.poll` event followed by one `peer.intent-evaluated` per advertised
+intent (`decision: "match" | "decline"`). No on-chain settlement happens
+in this loop yet — that ships separately. Tail the JSONL to confirm:
+
+```
+journalctl -u trust-swap-agent -f | jq 'select(.type | startswith("peer."))'
 ```
 
 ## Operations

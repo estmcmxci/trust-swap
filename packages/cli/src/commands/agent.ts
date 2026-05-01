@@ -30,6 +30,7 @@ import {
   type TradingClient,
 } from "@trust-swap/core";
 import { resolveToken } from "../utils/tokens.js";
+import { pollPeers } from "./agent-peer-poll.js";
 
 // ---------------------------------------------------------------------------
 // `tru agent run` — operating-policy-driven autonomous loop.
@@ -215,7 +216,28 @@ export type AgentEvent =
       sessionKeyPath: string;
       kernelAddress: string;
     }
-  | { type: "agent.shutdown"; ts: string; signal: string; iterations: number };
+  | { type: "agent.shutdown"; ts: string; signal: string; iterations: number }
+  | {
+      type: "peer.poll";
+      ts: string;
+      iter: number;
+      peer: string;
+      outcome: "ok" | "no-endpoint" | "fetch-failed" | "parse-failed";
+      message?: string;
+      intentCount?: number;
+    }
+  | {
+      type: "peer.intent-evaluated";
+      ts: string;
+      iter: number;
+      peer: string;
+      peerIntentId: string;
+      tokenIn: string;
+      tokenOut: string;
+      decision: "match" | "decline";
+      reason: string;
+      matchedLocalIntentId?: string;
+    };
 
 export function formatJsonl(event: AgentEvent): string {
   return JSON.stringify(event);
@@ -637,6 +659,11 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
 
   let state = initialAgentState(Math.floor(Date.now() / 1000));
   let tickCount = 0;
+  // Throttle peer polls to `policy.listen.pollIntervalSec`. The main tick
+  // cadence (`schedule.intervalSec`) is the upper bound; if poll interval
+  // is longer we skip the A2A step on intermediate ticks. Stored in
+  // milliseconds (Date.now baseline) so it lines up with the tick clock.
+  let lastPeerPollAt = 0;
   let shuttingDown = false;
   // Aborts the in-flight inter-tick sleep so SIGTERM/SIGINT can return
   // within milliseconds rather than blocking up to one full intervalSec
@@ -829,6 +856,62 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
         iter: tickCount,
         consecutiveFailures: state.consecutiveFailures,
       });
+    }
+
+    // A2A peer poll (Phase 6c, TRU-43). Discovery + gating only — the
+    // settlement half (gatedSwap with peer's kernel as recipient) ships
+    // separately so this PR stays focused. Each match emits a JSONL
+    // event the operator can audit; no on-chain calls happen here.
+    if (policy.listen && !shuttingDown) {
+      const tickNow = Date.now();
+      const dueAt = lastPeerPollAt + policy.listen.pollIntervalSec * 1000;
+      if (tickNow >= dueAt) {
+        lastPeerPollAt = tickNow;
+        try {
+          const peerResults = await pollPeers(policy);
+          for (const r of peerResults) {
+            emit({
+              type: "peer.poll",
+              ts: new Date().toISOString(),
+              iter: tickCount,
+              peer: r.peerEnsName,
+              outcome: r.outcome.kind,
+              message:
+                r.outcome.kind === "fetch-failed" ||
+                r.outcome.kind === "parse-failed"
+                  ? r.outcome.message
+                  : undefined,
+              intentCount:
+                r.outcome.kind === "ok" ? r.outcome.body.intents.length : undefined,
+            });
+            for (const { peerIntent, evaluation } of r.evaluations) {
+              emit({
+                type: "peer.intent-evaluated",
+                ts: new Date().toISOString(),
+                iter: tickCount,
+                peer: r.peerEnsName,
+                peerIntentId: peerIntent.id,
+                tokenIn: peerIntent.tokenIn,
+                tokenOut: peerIntent.tokenOut,
+                decision: evaluation.decision,
+                reason: evaluation.reason,
+                matchedLocalIntentId: evaluation.matchedLocalIntentId,
+              });
+            }
+          }
+        } catch (err) {
+          // pollPeers swallows per-peer fetch errors into outcome.kind, so
+          // an exception here is something structural (ENS RPC dead, OOM).
+          // Don't let it kill the main loop — just log + carry on.
+          emit({
+            type: "tick.error",
+            ts: new Date().toISOString(),
+            iter: tickCount,
+            intentId: "(peer-poll)",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
     }
 
     await sleepUntilNext();
