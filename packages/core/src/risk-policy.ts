@@ -104,6 +104,31 @@ export function parseRiskPolicy(input: unknown): RiskPolicy {
 const ENDPOINT_KEY = "agent-endpoint";
 const POLICY_KEY = "agent-risk-policy";
 
+// ---------------------------------------------------------------------------
+// Agent endpoint resolver (Phase 6c, TRU-43)
+//
+// Public read for the `agent-endpoint` text record, used by both the
+// existing endpoint-override path in `resolveRiskPolicy` and the A2A
+// peer-poll loop. Kept here next to `safeReadTextRecord` so the failure
+// shape (return null on transport / NXDOMAIN) stays in lockstep with
+// the rest of the resolver.
+// ---------------------------------------------------------------------------
+
+export interface ResolveAgentEndpointOptions {
+  ensRpcUrl?: string;
+  client?: PublicClient;
+  blockTag?: "latest" | "finalized" | bigint;
+}
+
+export async function resolveAgentEndpoint(
+  ensName: string,
+  options: ResolveAgentEndpointOptions = {},
+): Promise<string | null> {
+  const client = options.client ?? createEnsClient(options.ensRpcUrl);
+  const name = normalizeName(ensName);
+  return safeReadTextRecord(client, name, ENDPOINT_KEY, options.blockTag);
+}
+
 export interface ResolveRiskPolicyOptions {
   /** Override the ENS RPC URL. Defaults to ETH_RPC_URL or eth.drpc.org. */
   ensRpcUrl?: string;
