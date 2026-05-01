@@ -159,8 +159,18 @@ operating policy and restart:
 Each tick where `pollIntervalSec` has elapsed, the daemon resolves each
 peer's `agent-endpoint` ENS record, fetches `/intents`, and emits a
 `peer.poll` event followed by one `peer.intent-evaluated` per advertised
-intent (`decision: "match" | "decline"`). No on-chain settlement happens
-in this loop yet — that ships separately. Tail the JSONL to confirm:
+intent (`decision: "match" | "decline"`). For `match` decisions the
+daemon then re-checks the same per-tick constraints
+(`minSecondsBetweenSwaps`, daily spend cap, halt) and either settles the
+swap via `gatedSwap` — recipient pulled from the peer's intent, not the
+local one — emitting `peer.intent-settled`, or skips with reason via
+`peer.intent-skipped`. The bidirectional RiskPolicy gate is enforced at
+oracle-attestation time, so a swap that would deliver to a peer below
+this daemon's `minCounterpartyTier` is rejected before it broadcasts.
+
+Settlement updates the same state the regular intent path uses, so
+combined throughput respects `minSecondsBetweenSwaps` — typically one
+swap per tick across both sources. Tail the JSONL to confirm:
 
 ```
 journalctl -u trust-swap-agent -f | jq 'select(.type | startswith("peer."))'
