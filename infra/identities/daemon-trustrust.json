@@ -14,17 +14,17 @@
   "keystorePath": "~/.synthesis/daemon-trustrust-keystore.json",
   "sessionKeyPath": "~/.synthesis/daemon-trustrust-session-key.json",
   "riskPolicy": {
-    "minCounterpartyTier": "verified",
-    "maxSizeUsd": 50,
+    "minCounterpartyTier": "registered",
+    "maxSizeUsd": 100,
     "acceptedTokens": [
-      "WETH"
+      "USDC"
     ],
-    "published": "{\"minCounterpartyTier\":\"verified\",\"maxAcceptedSize\":\"50000000\",\"acceptedTokens\":[\"0x4200000000000000000000000000000000000006\"]}"
+    "published": "{\"minCounterpartyTier\":\"registered\",\"maxAcceptedSize\":\"100000000\",\"acceptedTokens\":[\"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\"]}"
   },
   "txs": {
-    "setAddr": "0xad4e392823c150c7050a5c303ee5beb4c902c9971ab74d167f134215310f5e3a",
-    "setRiskPolicy": "0xcf9fbc2cd4eceec60525162e0936f171b804aaf8d9e1e3203ecc1f268d9cc256"
+    "setAddr": "skipped",
+    "setRiskPolicy": "0xb812da61abc9cc2629d2288020245c478f04713a54d34750287eaa578f23e789"
   },
-  "provisionedAt": "2026-05-01T21:06:05.682Z",
+  "provisionedAt": "2026-05-02T21:48:50.909Z",
   "purpose": "TrustSwap autonomous-daemon agent identity — Phase 5a (TRU-80). Subname registered + funded by parent owner via MetaMask; ENS records + session key issued by daemon owner key."
 }
