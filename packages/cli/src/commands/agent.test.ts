@@ -1,9 +1,20 @@
-import { describe, expect, it } from "vitest";
-import type { ClassicQuote, OperatingPolicy, OrchestrateResult } from "@trust-swap/core";
+import { describe, expect, it, vi } from "vitest";
+import type {
+  ClassicQuote,
+  OperatingPolicy,
+  OrchestrateResult,
+  OracleClient,
+  TradingClient,
+} from "@trust-swap/core";
+import type { Signer } from "@synthesis/resolver";
 import {
+  type AgentEvent,
+  type ExecutePeerPollDeps,
   applyConstraints,
   buildIntentsResponse,
   estimateSwapUsd,
+  executePeerPoll,
+  executeRegularTick,
   formatJsonl,
   initialAgentState,
   parseStatusBind,
@@ -11,6 +22,7 @@ import {
   sleep,
   utcDayStart,
 } from "./agent.js";
+import type { PeerPollResult } from "./agent-peer-poll.js";
 
 const KERNEL = "0x522D9d15D425E2b819f8963A10596eADCB19255d";
 
@@ -440,5 +452,290 @@ describe("buildIntentsResponse", () => {
     const res = buildIntentsResponse(policy, FROZEN_NOW);
     expect(res.intents[0]).not.toHaveProperty("cron");
     expect(res.intents[0]).not.toHaveProperty("enabled");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TRU-87: peer-poll runs every iteration. The pre-fix loop body had two
+// `continue` statements (constraint-blocked tick + no-enabled-intent tick)
+// that skipped past the peer-poll block, so the daemon only ever fulfilled
+// peer matches when the kernel could fund TWO swaps per tick. The hoisted
+// helpers below let us drive the new ordering deterministically without
+// spinning up a real signer / orchestrate / fetch.
+// ---------------------------------------------------------------------------
+
+const FAKE_SIGNER = {
+  address: "0x0000000000000000000000000000000000000000",
+  execute: async () => "0x0",
+} as unknown as Signer;
+
+function fakePeerPollDeps(
+  over: Partial<ExecutePeerPollDeps> = {},
+): ExecutePeerPollDeps {
+  return {
+    policy: listenPolicy(),
+    signer: FAKE_SIGNER,
+    tradingClient: {} as TradingClient,
+    oracleClient: {} as OracleClient,
+    emit: () => {},
+    tickCount: 1,
+    shuttingDown: () => false,
+    ...over,
+  };
+}
+
+function listenPolicy(over: Partial<OperatingPolicy> = {}): OperatingPolicy {
+  return basePolicy({
+    listen: {
+      peers: ["daemon.peer.eth"],
+      pollIntervalSec: 30,
+      maxConcurrentIntents: 4,
+    },
+    ...over,
+  });
+}
+
+function emptyPeerOk(peer = "daemon.peer.eth"): PeerPollResult {
+  return {
+    peerEnsName: peer,
+    outcome: {
+      kind: "ok",
+      body: {
+        ensName: peer,
+        kernelAddress: KERNEL,
+        listedAt: "2026-05-02T12:00:00Z",
+        intents: [],
+      },
+    },
+    evaluations: [],
+  };
+}
+
+function okOrchestrateResult(): OrchestrateResult {
+  return {
+    decision: { allow: true } as OrchestrateResult["decision"],
+    recipientProfile: {} as OrchestrateResult["recipientProfile"],
+    recipientRiskPolicy: null,
+    txHash: "0xabc" as `0x${string}`,
+  } as unknown as OrchestrateResult;
+}
+
+describe("executePeerPoll (TRU-87 hoisted peer-poll)", () => {
+  const NOW_SEC = Math.floor(Date.parse("2026-05-02T12:00:00Z") / 1000);
+  const NOW_MS = NOW_SEC * 1000;
+
+  it("fires pollPeers when no local intent is enabled (the TRU-87 lockout case)", async () => {
+    const events: AgentEvent[] = [];
+    const policy = listenPolicy({
+      intents: [
+        {
+          id: "x",
+          kind: "swap",
+          tokenIn: "USDC",
+          tokenOut: "WETH",
+          amount: "1",
+          recipient: "kernel.test.eth",
+          enabled: false,
+        },
+      ],
+    });
+    const pollPeersFn = vi.fn(async () => [emptyPeerOk()]);
+    const orchestrateFn = vi.fn();
+
+    await executePeerPoll(
+      initialAgentState(NOW_SEC),
+      0,
+      NOW_MS,
+      fakePeerPollDeps({
+        policy,
+        emit: (e) => events.push(e),
+        pollPeersFn,
+        orchestrateFn,
+      }),
+    );
+
+    expect(pollPeersFn).toHaveBeenCalledTimes(1);
+    expect(events.find((e) => e.type === "peer.poll")).toBeDefined();
+    expect(orchestrateFn).not.toHaveBeenCalled();
+  });
+
+  it("fires pollPeers after a constraint-blocked regular tick (halted state)", async () => {
+    const events: AgentEvent[] = [];
+    const haltedState = { ...initialAgentState(NOW_SEC), halted: true };
+    const pollPeersFn = vi.fn(async () => [emptyPeerOk()]);
+    const orchestrateFn = vi.fn();
+
+    await executePeerPoll(
+      haltedState,
+      0,
+      NOW_MS,
+      fakePeerPollDeps({
+        emit: (e) => events.push(e),
+        pollPeersFn,
+        orchestrateFn,
+      }),
+    );
+
+    expect(pollPeersFn).toHaveBeenCalledTimes(1);
+    expect(events.find((e) => e.type === "peer.poll")).toBeDefined();
+    // Halted state still propagates through to settlement guards (proved
+    // separately in the back-to-back test below).
+  });
+
+  it("min-seconds-between-swaps blocks the second of two back-to-back peer settles", async () => {
+    const events: AgentEvent[] = [];
+    const peerIntents = [
+      {
+        id: "p1",
+        kind: "swap" as const,
+        tokenIn: "USDC",
+        tokenOut: "WETH",
+        amount: "1",
+        recipient: "kernel.peer.eth",
+      },
+      {
+        id: "p2",
+        kind: "swap" as const,
+        tokenIn: "USDC",
+        tokenOut: "WETH",
+        amount: "1",
+        recipient: "kernel.peer.eth",
+      },
+    ];
+    const pollPeersFn = vi.fn(async (): Promise<ReadonlyArray<PeerPollResult>> => [
+      {
+        peerEnsName: "daemon.peer.eth",
+        outcome: {
+          kind: "ok",
+          body: {
+            ensName: "daemon.peer.eth",
+            kernelAddress: KERNEL,
+            listedAt: "2026-05-02T12:00:00Z",
+            intents: peerIntents,
+          },
+        },
+        evaluations: peerIntents.map((p) => ({
+          peerIntent: p,
+          evaluation: {
+            decision: "match" as const,
+            reason: 'matches local intent "a"',
+            matchedLocalIntentId: "a",
+          },
+        })),
+      },
+    ]);
+    const orchestrateFn = vi.fn(async () => okOrchestrateResult());
+
+    await executePeerPoll(
+      initialAgentState(NOW_SEC),
+      0,
+      NOW_MS,
+      fakePeerPollDeps({
+        emit: (e) => events.push(e),
+        pollPeersFn,
+        orchestrateFn,
+      }),
+    );
+
+    // First match settled; second hit the per-match constraint re-check
+    expect(orchestrateFn).toHaveBeenCalledTimes(1);
+    const skipped = events.find((e) => e.type === "peer.intent-skipped");
+    expect(skipped).toBeDefined();
+    if (skipped?.type === "peer.intent-skipped") {
+      expect(skipped.reason).toBe("min-seconds-between-swaps");
+      expect(skipped.peerIntentId).toBe("p2");
+    }
+    expect(events.filter((e) => e.type === "peer.intent-settled")).toHaveLength(1);
+  });
+
+  it("respects pollIntervalSec — no fetch before the next due time", async () => {
+    const events: AgentEvent[] = [];
+    const pollPeersFn = vi.fn(async () => [emptyPeerOk()]);
+
+    // lastPeerPollAt = NOW_MS, pollIntervalSec = 30, so we're not due yet
+    const result = await executePeerPoll(
+      initialAgentState(NOW_SEC),
+      NOW_MS,
+      NOW_MS + 5_000,
+      fakePeerPollDeps({
+        emit: (e) => events.push(e),
+        pollPeersFn,
+      }),
+    );
+
+    expect(pollPeersFn).not.toHaveBeenCalled();
+    expect(events).toHaveLength(0);
+    expect(result.lastPeerPollAt).toBe(NOW_MS);
+  });
+});
+
+describe("executeRegularTick (TRU-87 — runs the regular intent path)", () => {
+  const NOW_SEC = Math.floor(Date.parse("2026-05-02T12:00:00Z") / 1000);
+
+  it("emits tick.swap when a local intent fires successfully", async () => {
+    const events: AgentEvent[] = [];
+    const orchestrateFn = vi.fn(async () => okOrchestrateResult());
+
+    const out = await executeRegularTick(
+      initialAgentState(NOW_SEC),
+      NOW_SEC,
+      {
+        policy: basePolicy(),
+        signer: FAKE_SIGNER,
+        tradingClient: {} as TradingClient,
+        oracleClient: {} as OracleClient,
+        emit: (e) => events.push(e),
+        tickCount: 1,
+        tickStartedAt: Date.now(),
+        orchestrateFn,
+      },
+    );
+
+    expect(orchestrateFn).toHaveBeenCalledTimes(1);
+    const swap = events.find((e) => e.type === "tick.swap");
+    expect(swap).toBeDefined();
+    if (swap?.type === "tick.swap") {
+      expect(swap.intentId).toBe("a");
+      expect(swap.success).toBe(true);
+      expect(swap.decision).toBe("allow");
+    }
+    expect(out.lastSwapAt).toBe(NOW_SEC);
+    expect(out.consecutiveFailures).toBe(0);
+  });
+
+  it("emits tick.skipped (no-enabled-intent) without calling orchestrate", async () => {
+    const events: AgentEvent[] = [];
+    const orchestrateFn = vi.fn();
+    const policy = basePolicy({
+      intents: [
+        {
+          id: "a",
+          kind: "swap",
+          tokenIn: "USDC",
+          tokenOut: "WETH",
+          amount: "10",
+          recipient: "kernel.test.eth",
+          enabled: false,
+        },
+      ],
+    });
+
+    await executeRegularTick(initialAgentState(NOW_SEC), NOW_SEC, {
+      policy,
+      signer: FAKE_SIGNER,
+      tradingClient: {} as TradingClient,
+      oracleClient: {} as OracleClient,
+      emit: (e) => events.push(e),
+      tickCount: 1,
+      tickStartedAt: Date.now(),
+      orchestrateFn,
+    });
+
+    expect(orchestrateFn).not.toHaveBeenCalled();
+    const skipped = events.find((e) => e.type === "tick.skipped");
+    expect(skipped).toBeDefined();
+    if (skipped?.type === "tick.skipped") {
+      expect(skipped.reason).toBe("no-enabled-intent");
+    }
   });
 });
