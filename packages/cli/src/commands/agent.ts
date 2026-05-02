@@ -30,7 +30,7 @@ import {
   type TradingClient,
 } from "@trust-swap/core";
 import { resolveToken } from "../utils/tokens.js";
-import { pollPeers } from "./agent-peer-poll.js";
+import { pollPeers, type FetchPeerIntentsOptions } from "./agent-peer-poll.js";
 
 // ---------------------------------------------------------------------------
 // `tru agent run` — operating-policy-driven autonomous loop.
@@ -646,6 +646,365 @@ function makeKernelSigner(
 }
 
 // ---------------------------------------------------------------------------
+// Per-tick step helpers (exported for tests).
+//
+// The run loop calls peer-poll first, then the regular-intent tick. The
+// previous "skip peer-poll on constraint-blocked / no-enabled-intent"
+// bug (TRU-87) is gone because the regular-tick step now lives in its
+// own function with no side effects on the surrounding control flow —
+// when constraints are blocked or no intent is enabled it emits the
+// `tick.skipped` event and returns the unchanged state, instead of
+// `continue`-ing past the (then-unreachable) peer-poll block.
+//
+// Peer-poll runs first because that's the demo-friendly choice when a
+// kernel only has funds for one swap per tick: peer matches settle
+// before the daemon's own self-trigger gets a slot, and the regular
+// tick's `applyConstraints` (via `lastSwapAt`) bounds the combined
+// throughput to one swap per `minSecondsBetweenSwaps`.
+// ---------------------------------------------------------------------------
+
+export type OrchestrateFn = typeof orchestrate;
+export type PollPeersFn = typeof pollPeers;
+
+export interface ExecuteRegularTickDeps {
+  policy: OperatingPolicy;
+  signer: Signer;
+  tradingClient: TradingClient;
+  oracleClient: OracleClient;
+  routerAddress?: Address;
+  emit: (event: AgentEvent) => void;
+  tickCount: number;
+  /** Date.now() captured at the start of the iteration; used for `durationMs`. */
+  tickStartedAt: number;
+  /** Test injection hook; defaults to the real `orchestrate`. */
+  orchestrateFn?: OrchestrateFn;
+}
+
+export async function executeRegularTick(
+  state: AgentState,
+  now: number,
+  deps: ExecuteRegularTickDeps,
+): Promise<AgentState> {
+  const orch = deps.orchestrateFn ?? orchestrate;
+
+  const constraintCheck = applyConstraints(deps.policy, state, now);
+  if (!constraintCheck.ok) {
+    deps.emit({
+      type: "tick.skipped",
+      ts: new Date().toISOString(),
+      iter: deps.tickCount,
+      reason: constraintCheck.reason,
+    });
+    return state;
+  }
+  if (constraintCheck.resetDailySpend) {
+    state = { ...state, dayStart: utcDayStart(now), spentUsdToday: 0 };
+  }
+
+  const pick = pickNextIntent(deps.policy, state);
+  if (!pick) {
+    deps.emit({
+      type: "tick.skipped",
+      ts: new Date().toISOString(),
+      iter: deps.tickCount,
+      reason: "no-enabled-intent",
+    });
+    return state;
+  }
+  state = { ...state, intentCursor: pick.nextCursor };
+
+  let result: OrchestrateResult | null = null;
+  let success = false;
+  let errMsg: string | null = null;
+  try {
+    const tokenIn = resolveToken(pick.intent.tokenIn);
+    const tokenOut = resolveToken(pick.intent.tokenOut);
+    const amount = parseUnits(pick.intent.amount, tokenIn.decimals);
+    result = await orch({
+      recipientEns: pick.intent.recipient,
+      tokenIn: tokenIn.address,
+      tokenOut: tokenOut.address,
+      amount,
+      signer: deps.signer,
+      callerEns: deps.policy.agent.ensName,
+      tradingClient: deps.tradingClient,
+      oracleClient: deps.oracleClient,
+      routerAddress: deps.routerAddress,
+      dryRun: false,
+    });
+    success = !result.haltedAt && !!result.txHash;
+  } catch (err) {
+    errMsg = err instanceof Error ? err.message : String(err);
+  }
+
+  if (errMsg) {
+    deps.emit({
+      type: "tick.error",
+      ts: new Date().toISOString(),
+      iter: deps.tickCount,
+      intentId: pick.intent.id,
+      message: errMsg,
+    });
+    state = {
+      ...state,
+      lastSwapAt: now,
+      consecutiveFailures: state.consecutiveFailures + 1,
+    };
+  } else if (result) {
+    deps.emit({
+      type: "tick.swap",
+      ts: new Date().toISOString(),
+      iter: deps.tickCount,
+      intentId: pick.intent.id,
+      recipient: pick.intent.recipient,
+      tokenIn: pick.intent.tokenIn,
+      tokenOut: pick.intent.tokenOut,
+      amount: pick.intent.amount,
+      txHash: result.txHash,
+      decision: result.decision.allow ? "allow" : "deny",
+      haltedAt: result.haltedAt,
+      reason: result.onboardingHint,
+      durationMs: Date.now() - deps.tickStartedAt,
+      success,
+    });
+    state = {
+      ...state,
+      lastSwapAt: now,
+      consecutiveFailures: success ? 0 : state.consecutiveFailures + 1,
+      spentUsdToday: success
+        ? state.spentUsdToday + estimateSwapUsd(pick.intent, result)
+        : state.spentUsdToday,
+    };
+  }
+
+  if (state.consecutiveFailures >= deps.policy.constraints.haltOnConsecutiveFailures) {
+    state = { ...state, halted: true };
+    deps.emit({
+      type: "agent.halted",
+      ts: new Date().toISOString(),
+      iter: deps.tickCount,
+      consecutiveFailures: state.consecutiveFailures,
+    });
+  }
+  return state;
+}
+
+export interface ExecutePeerPollDeps {
+  policy: OperatingPolicy;
+  signer: Signer;
+  tradingClient: TradingClient;
+  oracleClient: OracleClient;
+  routerAddress?: Address;
+  emit: (event: AgentEvent) => void;
+  tickCount: number;
+  /** Read at decision points so SIGTERM mid-poll cuts settlement short. */
+  shuttingDown: () => boolean;
+  /** Test injection hook; defaults to the real `pollPeers`. */
+  pollPeersFn?: PollPeersFn;
+  /** Test injection hook; defaults to the real `orchestrate`. */
+  orchestrateFn?: OrchestrateFn;
+  /** Forwarded to `pollPeers` (custom fetch / ENS client / timeout). */
+  fetchPeerOptions?: FetchPeerIntentsOptions;
+}
+
+/**
+ * One peer-poll pass. Returns the (possibly updated) state and the new
+ * `lastPeerPollAt` timestamp (ms). The caller doesn't need to gate on
+ * `policy.listen` or `pollIntervalSec` — both checks live here.
+ *
+ * State updates mirror the regular-tick path (`lastSwapAt`,
+ * `spentUsdToday`, `consecutiveFailures`, `halted`) so combined
+ * throughput respects every constraint via `applyConstraints`. The
+ * settle-time re-check uses the latest `state` snapshot, including any
+ * mutations from the regular tick that ran before this poll (with the
+ * peer-poll-first ordering, that's none yet — but the helper supports
+ * both orderings for future flexibility).
+ */
+export async function executePeerPoll(
+  state: AgentState,
+  lastPeerPollAt: number,
+  nowMs: number,
+  deps: ExecutePeerPollDeps,
+): Promise<{ state: AgentState; lastPeerPollAt: number }> {
+  if (!deps.policy.listen || deps.shuttingDown()) {
+    return { state, lastPeerPollAt };
+  }
+  const dueAt = lastPeerPollAt + deps.policy.listen.pollIntervalSec * 1000;
+  if (nowMs < dueAt) {
+    return { state, lastPeerPollAt };
+  }
+  lastPeerPollAt = nowMs;
+
+  const orch = deps.orchestrateFn ?? orchestrate;
+  const poll = deps.pollPeersFn ?? pollPeers;
+
+  try {
+    const peerResults = await poll(deps.policy, deps.fetchPeerOptions);
+    for (const r of peerResults) {
+      deps.emit({
+        type: "peer.poll",
+        ts: new Date().toISOString(),
+        iter: deps.tickCount,
+        peer: r.peerEnsName,
+        outcome: r.outcome.kind,
+        message:
+          r.outcome.kind === "fetch-failed" ||
+          r.outcome.kind === "parse-failed"
+            ? r.outcome.message
+            : undefined,
+        intentCount:
+          r.outcome.kind === "ok" ? r.outcome.body.intents.length : undefined,
+      });
+      for (const { peerIntent, evaluation } of r.evaluations) {
+        deps.emit({
+          type: "peer.intent-evaluated",
+          ts: new Date().toISOString(),
+          iter: deps.tickCount,
+          peer: r.peerEnsName,
+          peerIntentId: peerIntent.id,
+          tokenIn: peerIntent.tokenIn,
+          tokenOut: peerIntent.tokenOut,
+          decision: evaluation.decision,
+          reason: evaluation.reason,
+          matchedLocalIntentId: evaluation.matchedLocalIntentId,
+        });
+        if (evaluation.decision !== "match") continue;
+        if (deps.shuttingDown()) break;
+
+        // Re-check constraints at settlement time. State may have
+        // changed since the start-of-tick check (a prior peer match
+        // in this same poll already bumped lastSwapAt) so the cheap
+        // recheck prevents racing past minSecondsBetweenSwaps.
+        const settleNow = Math.floor(Date.now() / 1000);
+        const settleCheck = applyConstraints(deps.policy, state, settleNow);
+        if (!settleCheck.ok) {
+          deps.emit({
+            type: "peer.intent-skipped",
+            ts: new Date().toISOString(),
+            iter: deps.tickCount,
+            peer: r.peerEnsName,
+            peerIntentId: peerIntent.id,
+            reason: settleCheck.reason,
+          });
+          continue;
+        }
+        if (settleCheck.resetDailySpend) {
+          state = { ...state, dayStart: utcDayStart(settleNow), spentUsdToday: 0 };
+        }
+
+        const settleStartedAt = Date.now();
+        let settleResult: OrchestrateResult | null = null;
+        let settleSuccess = false;
+        let settleErr: string | null = null;
+        try {
+          const tokenIn = resolveToken(peerIntent.tokenIn);
+          const tokenOut = resolveToken(peerIntent.tokenOut);
+          const amount = parseUnits(peerIntent.amount, tokenIn.decimals);
+          settleResult = await orch({
+            recipientEns: peerIntent.recipient,
+            tokenIn: tokenIn.address,
+            tokenOut: tokenOut.address,
+            amount,
+            signer: deps.signer,
+            callerEns: deps.policy.agent.ensName,
+            tradingClient: deps.tradingClient,
+            oracleClient: deps.oracleClient,
+            routerAddress: deps.routerAddress,
+            dryRun: false,
+          });
+          settleSuccess = !settleResult.haltedAt && !!settleResult.txHash;
+        } catch (err) {
+          settleErr = err instanceof Error ? err.message : String(err);
+        }
+
+        if (settleErr !== null) {
+          // Infrastructure failure — emit the dedicated error event
+          // instead of synthesizing a fake `decision: "deny"` on
+          // peer.intent-settled.
+          deps.emit({
+            type: "peer.intent-error",
+            ts: new Date().toISOString(),
+            iter: deps.tickCount,
+            peer: r.peerEnsName,
+            peerIntentId: peerIntent.id,
+            tokenIn: peerIntent.tokenIn,
+            tokenOut: peerIntent.tokenOut,
+            amount: peerIntent.amount,
+            recipient: peerIntent.recipient,
+            message: settleErr,
+            durationMs: Date.now() - settleStartedAt,
+          });
+        } else if (settleResult) {
+          deps.emit({
+            type: "peer.intent-settled",
+            ts: new Date().toISOString(),
+            iter: deps.tickCount,
+            peer: r.peerEnsName,
+            peerIntentId: peerIntent.id,
+            tokenIn: peerIntent.tokenIn,
+            tokenOut: peerIntent.tokenOut,
+            amount: peerIntent.amount,
+            recipient: peerIntent.recipient,
+            txHash: settleResult.txHash,
+            decision: settleResult.decision.allow ? "allow" : "deny",
+            haltedAt: settleResult.haltedAt,
+            reason: settleResult.onboardingHint,
+            durationMs: Date.now() - settleStartedAt,
+            success: settleSuccess,
+          });
+        }
+
+        // Mirror tick-swap state updates so combined throughput
+        // honors all constraints. Use settleNow (the snapshot the
+        // settlement check ran against) for lastSwapAt to avoid a
+        // tiny clock-drift window where a fast Uniswap response
+        // could push the recorded time slightly back.
+        const usdSpent =
+          settleSuccess && settleResult
+            ? estimateSwapUsd(
+                {
+                  kind: "swap",
+                  tokenIn: peerIntent.tokenIn,
+                  tokenOut: peerIntent.tokenOut,
+                  amount: peerIntent.amount,
+                },
+                settleResult,
+              )
+            : 0;
+        state = {
+          ...state,
+          lastSwapAt: settleNow,
+          consecutiveFailures: settleSuccess ? 0 : state.consecutiveFailures + 1,
+          spentUsdToday: state.spentUsdToday + usdSpent,
+        };
+        if (state.consecutiveFailures >= deps.policy.constraints.haltOnConsecutiveFailures) {
+          state = { ...state, halted: true };
+          deps.emit({
+            type: "agent.halted",
+            ts: new Date().toISOString(),
+            iter: deps.tickCount,
+            consecutiveFailures: state.consecutiveFailures,
+          });
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    // pollPeers swallows per-peer fetch errors into outcome.kind, so
+    // an exception here is something structural (ENS RPC dead, OOM).
+    // Don't let it kill the main loop — just log + carry on.
+    deps.emit({
+      type: "tick.error",
+      ts: new Date().toISOString(),
+      iter: deps.tickCount,
+      intentId: "(peer-poll)",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return { state, lastPeerPollAt };
+}
+
+// ---------------------------------------------------------------------------
 // Runtime loop
 // ---------------------------------------------------------------------------
 
@@ -794,7 +1153,6 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
       }
     }
 
-    const now = Math.floor(Date.now() / 1000);
     emit({
       type: "tick.start",
       ts: new Date().toISOString(),
@@ -802,291 +1160,45 @@ export async function runAgentRun(options: AgentRunOptions): Promise<void> {
       policyHash: hashPolicy(policy),
     });
 
-    const constraintCheck = applyConstraints(policy, state, now);
-    if (!constraintCheck.ok) {
-      emit({
-        type: "tick.skipped",
-        ts: new Date().toISOString(),
-        iter: tickCount,
-        reason: constraintCheck.reason,
-      });
-      await sleepUntilNext();
-      continue;
-    }
-    if (constraintCheck.resetDailySpend) {
-      state = { ...state, dayStart: utcDayStart(now), spentUsdToday: 0 };
-    }
-
-    const pick = pickNextIntent(policy, state);
-    if (!pick) {
-      emit({
-        type: "tick.skipped",
-        ts: new Date().toISOString(),
-        iter: tickCount,
-        reason: "no-enabled-intent",
-      });
-      await sleepUntilNext();
-      continue;
-    }
-    state = { ...state, intentCursor: pick.nextCursor };
-
-    let result: OrchestrateResult | null = null;
-    let success = false;
-    let errMsg: string | null = null;
-    try {
-      const tokenIn = resolveToken(pick.intent.tokenIn);
-      const tokenOut = resolveToken(pick.intent.tokenOut);
-      const amount = parseUnits(pick.intent.amount, tokenIn.decimals);
-      result = await orchestrate({
-        recipientEns: pick.intent.recipient,
-        tokenIn: tokenIn.address,
-        tokenOut: tokenOut.address,
-        amount,
+    // Peer-poll first (TRU-87): runs every iteration regardless of
+    // whether the regular-intent path is constraint-blocked or has no
+    // enabled intent. Internally gates on policy.listen +
+    // pollIntervalSec, so a daemon without `listen` configured pays
+    // nothing here. Demo-friendly ordering — when the kernel only has
+    // funds for one swap per tick, peer matches settle first and the
+    // regular tick gets the next-tick slot via lastSwapAt.
+    const routerAddress = process.env.TRUST_SWAP_ROUTER_ADDRESS as Address | undefined;
+    ({ state, lastPeerPollAt } = await executePeerPoll(
+      state,
+      lastPeerPollAt,
+      Date.now(),
+      {
+        policy,
         signer,
-        callerEns: policy.agent.ensName,
         tradingClient,
         oracleClient,
-        routerAddress: process.env.TRUST_SWAP_ROUTER_ADDRESS as Address | undefined,
-        dryRun: false,
-      });
-      success = !result.haltedAt && !!result.txHash;
-    } catch (err) {
-      errMsg = err instanceof Error ? err.message : String(err);
-    }
+        routerAddress,
+        emit,
+        tickCount,
+        shuttingDown: () => shuttingDown,
+      },
+    ));
 
-    if (errMsg) {
-      emit({
-        type: "tick.error",
-        ts: new Date().toISOString(),
-        iter: tickCount,
-        intentId: pick.intent.id,
-        message: errMsg,
-      });
-      state = {
-        ...state,
-        lastSwapAt: now,
-        consecutiveFailures: state.consecutiveFailures + 1,
-      };
-    } else if (result) {
-      emit({
-        type: "tick.swap",
-        ts: new Date().toISOString(),
-        iter: tickCount,
-        intentId: pick.intent.id,
-        recipient: pick.intent.recipient,
-        tokenIn: pick.intent.tokenIn,
-        tokenOut: pick.intent.tokenOut,
-        amount: pick.intent.amount,
-        txHash: result.txHash,
-        decision: result.decision.allow ? "allow" : "deny",
-        haltedAt: result.haltedAt,
-        reason: result.onboardingHint,
-        durationMs: Date.now() - tickStartedAt,
-        success,
-      });
-      state = {
-        ...state,
-        lastSwapAt: now,
-        consecutiveFailures: success ? 0 : state.consecutiveFailures + 1,
-        spentUsdToday: success
-          ? state.spentUsdToday + estimateSwapUsd(pick.intent, result)
-          : state.spentUsdToday,
-      };
-    }
-
-    if (state.consecutiveFailures >= policy.constraints.haltOnConsecutiveFailures) {
-      state = { ...state, halted: true };
-      emit({
-        type: "agent.halted",
-        ts: new Date().toISOString(),
-        iter: tickCount,
-        consecutiveFailures: state.consecutiveFailures,
-      });
-    }
-
-    // A2A peer poll (Phase 6c, TRU-43). Discovery + gating + settlement.
-    // For each peer in `policy.listen.peers` we GET /intents, evaluate
-    // each advertised intent against the local policy (pure pair-match),
-    // then for "match" results we re-check the same per-tick constraints
-    // the regular intent path uses and run `orchestrate` with the peer
-    // intent's params. The recipient is taken from the peer's own intent
-    // (typically their kernel), so the swap delivers tokens to them and
-    // the bidirectional RiskPolicy check happens at oracle time.
-    //
-    // Settlement updates the same `state` (lastSwapAt, spentUsdToday,
-    // consecutiveFailures) as the regular tick path, so
-    // `minSecondsBetweenSwaps` correctly bounds the combined throughput
-    // — typically only one swap fires per tick across both sources.
-    if (policy.listen && !shuttingDown) {
-      const tickNow = Date.now();
-      const dueAt = lastPeerPollAt + policy.listen.pollIntervalSec * 1000;
-      if (tickNow >= dueAt) {
-        lastPeerPollAt = tickNow;
-        try {
-          const peerResults = await pollPeers(policy);
-          for (const r of peerResults) {
-            emit({
-              type: "peer.poll",
-              ts: new Date().toISOString(),
-              iter: tickCount,
-              peer: r.peerEnsName,
-              outcome: r.outcome.kind,
-              message:
-                r.outcome.kind === "fetch-failed" ||
-                r.outcome.kind === "parse-failed"
-                  ? r.outcome.message
-                  : undefined,
-              intentCount:
-                r.outcome.kind === "ok" ? r.outcome.body.intents.length : undefined,
-            });
-            for (const { peerIntent, evaluation } of r.evaluations) {
-              emit({
-                type: "peer.intent-evaluated",
-                ts: new Date().toISOString(),
-                iter: tickCount,
-                peer: r.peerEnsName,
-                peerIntentId: peerIntent.id,
-                tokenIn: peerIntent.tokenIn,
-                tokenOut: peerIntent.tokenOut,
-                decision: evaluation.decision,
-                reason: evaluation.reason,
-                matchedLocalIntentId: evaluation.matchedLocalIntentId,
-              });
-              if (evaluation.decision !== "match") continue;
-              if (shuttingDown) break;
-
-              // Re-check constraints at settlement time. State may have
-              // changed since the start-of-tick check (the regular intent
-              // already swapped, or a prior peer match in this same poll
-              // bumped lastSwapAt) so the cheap recheck prevents racing
-              // past minSecondsBetweenSwaps.
-              const settleNow = Math.floor(Date.now() / 1000);
-              const settleCheck = applyConstraints(policy, state, settleNow);
-              if (!settleCheck.ok) {
-                emit({
-                  type: "peer.intent-skipped",
-                  ts: new Date().toISOString(),
-                  iter: tickCount,
-                  peer: r.peerEnsName,
-                  peerIntentId: peerIntent.id,
-                  reason: settleCheck.reason,
-                });
-                continue;
-              }
-              if (settleCheck.resetDailySpend) {
-                state = { ...state, dayStart: utcDayStart(settleNow), spentUsdToday: 0 };
-              }
-
-              const settleStartedAt = Date.now();
-              let settleResult: OrchestrateResult | null = null;
-              let settleSuccess = false;
-              let settleErr: string | null = null;
-              try {
-                const tokenIn = resolveToken(peerIntent.tokenIn);
-                const tokenOut = resolveToken(peerIntent.tokenOut);
-                const amount = parseUnits(peerIntent.amount, tokenIn.decimals);
-                settleResult = await orchestrate({
-                  recipientEns: peerIntent.recipient,
-                  tokenIn: tokenIn.address,
-                  tokenOut: tokenOut.address,
-                  amount,
-                  signer,
-                  callerEns: policy.agent.ensName,
-                  tradingClient,
-                  oracleClient,
-                  routerAddress: process.env.TRUST_SWAP_ROUTER_ADDRESS as Address | undefined,
-                  dryRun: false,
-                });
-                settleSuccess = !settleResult.haltedAt && !!settleResult.txHash;
-              } catch (err) {
-                settleErr = err instanceof Error ? err.message : String(err);
-              }
-
-              if (settleErr !== null) {
-                // Infrastructure failure — emit the dedicated error event
-                // instead of synthesizing a fake `decision: "deny"` on
-                // peer.intent-settled.
-                emit({
-                  type: "peer.intent-error",
-                  ts: new Date().toISOString(),
-                  iter: tickCount,
-                  peer: r.peerEnsName,
-                  peerIntentId: peerIntent.id,
-                  tokenIn: peerIntent.tokenIn,
-                  tokenOut: peerIntent.tokenOut,
-                  amount: peerIntent.amount,
-                  recipient: peerIntent.recipient,
-                  message: settleErr,
-                  durationMs: Date.now() - settleStartedAt,
-                });
-              } else if (settleResult) {
-                emit({
-                  type: "peer.intent-settled",
-                  ts: new Date().toISOString(),
-                  iter: tickCount,
-                  peer: r.peerEnsName,
-                  peerIntentId: peerIntent.id,
-                  tokenIn: peerIntent.tokenIn,
-                  tokenOut: peerIntent.tokenOut,
-                  amount: peerIntent.amount,
-                  recipient: peerIntent.recipient,
-                  txHash: settleResult.txHash,
-                  decision: settleResult.decision.allow ? "allow" : "deny",
-                  haltedAt: settleResult.haltedAt,
-                  reason: settleResult.onboardingHint,
-                  durationMs: Date.now() - settleStartedAt,
-                  success: settleSuccess,
-                });
-              }
-
-              // Mirror tick-swap state updates so combined throughput
-              // honors all constraints. Use settleNow (the snapshot the
-              // settlement check ran against) for lastSwapAt to avoid a
-              // tiny clock-drift window where a fast Uniswap response
-              // could push the recorded time slightly back.
-              const usdSpent =
-                settleSuccess && settleResult
-                  ? estimateSwapUsd(
-                      {
-                        kind: "swap",
-                        tokenIn: peerIntent.tokenIn,
-                        tokenOut: peerIntent.tokenOut,
-                        amount: peerIntent.amount,
-                      },
-                      settleResult,
-                    )
-                  : 0;
-              state = {
-                ...state,
-                lastSwapAt: settleNow,
-                consecutiveFailures: settleSuccess ? 0 : state.consecutiveFailures + 1,
-                spentUsdToday: state.spentUsdToday + usdSpent,
-              };
-              if (state.consecutiveFailures >= policy.constraints.haltOnConsecutiveFailures) {
-                state = { ...state, halted: true };
-                emit({
-                  type: "agent.halted",
-                  ts: new Date().toISOString(),
-                  iter: tickCount,
-                  consecutiveFailures: state.consecutiveFailures,
-                });
-                break;
-              }
-            }
-          }
-        } catch (err) {
-          // pollPeers swallows per-peer fetch errors into outcome.kind, so
-          // an exception here is something structural (ENS RPC dead, OOM).
-          // Don't let it kill the main loop — just log + carry on.
-          emit({
-            type: "tick.error",
-            ts: new Date().toISOString(),
-            iter: tickCount,
-            intentId: "(peer-poll)",
-            message: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+    if (!shuttingDown) {
+      state = await executeRegularTick(
+        state,
+        Math.floor(Date.now() / 1000),
+        {
+          policy,
+          signer,
+          tradingClient,
+          oracleClient,
+          routerAddress,
+          emit,
+          tickCount,
+          tickStartedAt,
+        },
+      );
     }
 
     await sleepUntilNext();
