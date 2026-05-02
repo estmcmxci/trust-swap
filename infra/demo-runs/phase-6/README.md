@@ -30,8 +30,32 @@ What this proves:
    yielded after the peer attempt — peer-poll won the slot, regular tick
    bounced off `applyConstraints` per the TRU-87 design.
 
-The corresponding allow-case capture (`allow-<date>.jsonl`) lands once
-TRU-88 is fixed: re-run `pnpm provision:daemon --ens-name daemon.trustrust.eth`
-+ the (post-synthesis-#1-fix) `ensemble agent register`, then `scripts/
-redeploy-daemon-trustrust.sh`. Same daemon-1 binary; the only thing that
-changes is the on-chain manifest signature.
+### `allow-2026-05-02.jsonl`
+
+The matching allow-case capture, recorded after TRU-88 was fully unblocked.
+Daemon-1 (`daemon.emilemarcelagustin.eth`) peer-fulfilled daemon-2's
+`drip-usdc-to-weth` intent: 0.1 USDC swapped to WETH and delivered to
+`daemon.trustrust.eth`. Settlement tx on Base:
+[`0xfe6f2308…23a88f5`](https://basescan.org/tx/0xfe6f2308701fc19074fa84304efcb6dbd5e4cb14e06d91e91028e471a23a88f5).
+
+Five gates that had to pass for `decision: allow` (vs the deny capture's failure on the first one):
+
+1. **Manifest lineage intact** — daemon.trustrust.eth published an AIP V2 Mode B
+   manifest (`agent-version-lineage = list:v1 ipfs://…`) signed by the
+   registry owner. Resolver walked `prev: null` → genesis → intact.
+2. **Manifest signature valid** — daemon.trustrust.eth's `addr()` was repointed
+   from the kernel to the owner EOA so `verifyMessage` recovers correctly.
+   (Upstream issue: synthesis #41 — resolver checks `addr()` instead of the
+   registry owner.)
+3. **Recipient accepts `tokenIn`** — daemon-2's RiskPolicy `acceptedTokens`
+   includes USDC.
+4. **Swapper accepts `tokenOut`** — daemon-1's RiskPolicy was extended with
+   WETH so the bidirectional check on `tokenInbound` (= `tokenOut` for the
+   swapper side) passes.
+5. **Tier + size checks** — both daemons at tier `registered`+, swap value
+   well under both `maxAcceptedSize` caps.
+
+Reproducing this involves: a published AIP manifest for daemon.trustrust.eth,
+the addr() pointing at the manifest signer, both daemons' RiskPolicy
+`acceptedTokens` covering both legs of the swap, and waiting for ENS
+finalization (`blockTag: finalized`) before the oracle re-resolves.
