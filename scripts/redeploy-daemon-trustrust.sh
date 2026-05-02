@@ -100,6 +100,23 @@ if [[ "$ASSUME_YES" -ne 1 ]]; then
   case "$ans" in y|Y|yes|YES) ;; *) echo "aborted"; exit 1 ;; esac
 fi
 
+# --- Preflight: ensure jq is on the droplet ------------------------------
+# Step 2's policy update needs jq remotely. The droplet ships without it —
+# `redeploy-daemon-trustrust.sh` initially failed mid-run when /usr/bin/jq
+# was missing. apt-get install is fast (<5s on a fresh box) and idempotent,
+# so we just run it unconditionally rather than branch on `command -v`.
+echo
+echo "[0/4] preflight: ensure jq on droplet"
+ssh "$SSH_TARGET" "
+  set -euo pipefail
+  if ! command -v jq >/dev/null; then
+    echo '  installing jq via apt-get…'
+    DEBIAN_FRONTEND=noninteractive apt-get -qq update >/dev/null
+    DEBIAN_FRONTEND=noninteractive apt-get -qq install -y jq >/dev/null
+  fi
+  jq --version | sed 's/^/  /'
+"
+
 # --- Step 1: rsync session key -------------------------------------------
 echo
 echo "[1/4] rsync session key"
