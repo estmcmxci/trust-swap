@@ -1,0 +1,6 @@
+{"type":"agent.start","ts":"2026-05-02T21:06:57.816Z","ensName":"daemon.emilemarcelagustin.eth","kernelAddress":"0x522D9d15D425E2b819f8963A10596eADCB19255d","policy":"/srv/trust-swap/policy.json","iterations":"unbounded"}
+{"type":"tick.start","ts":"2026-05-02T21:06:57.833Z","iter":1,"policyHash":"len705:8f4a87f4"}
+{"type":"peer.poll","ts":"2026-05-02T21:06:59.058Z","iter":1,"peer":"daemon.trustrust.eth","outcome":"ok","intentCount":1}
+{"type":"peer.intent-evaluated","ts":"2026-05-02T21:06:59.061Z","iter":1,"peer":"daemon.trustrust.eth","peerIntentId":"drip-usdc-to-weth","tokenIn":"USDC","tokenOut":"WETH","decision":"match","reason":"matches local intent \"fulfill-usdc-weth\"","matchedLocalIntentId":"fulfill-usdc-weth"}
+{"type":"peer.intent-settled","ts":"2026-05-02T21:07:03.033Z","iter":1,"peer":"daemon.trustrust.eth","peerIntentId":"drip-usdc-to-weth","tokenIn":"USDC","tokenOut":"WETH","amount":"0.1","recipient":"daemon.trustrust.eth","decision":"deny","haltedAt":"gate-deny","reason":"recipient's manifest lineage chain has a broken signature — an earlier version was signed by a different key.","durationMs":3972,"success":false}
+{"type":"tick.skipped","ts":"2026-05-02T21:07:03.034Z","iter":1,"reason":"min-seconds-between-swaps"}
