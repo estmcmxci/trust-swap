@@ -8,11 +8,45 @@ import {
   resolveRiskPolicyWithProvenance,
   resolveWithSubnameInheritance,
 } from "@trust-swap/core";
+import {
+  createEnsClient,
+  getTextRecord,
+  type ResolveOptions,
+  type TrustProfile,
+} from "@synthesis/resolver";
 import type {
   PreviewResponse,
   PreviewErrorResponse,
   RiskPolicySerialized,
 } from "@/lib/preview-types";
+
+// Synthesis `resolve()` does not auto-read the `agent-ids` text record;
+// without `knownAgentIds`, identity verification fails even when the
+// record is set on-chain. Read it from ENS, parse, and forward.
+async function resolveWithAutoAgentIds(
+  ens: string,
+  options: ResolveOptions = {},
+): Promise<TrustProfile> {
+  let knownAgentIds = options.knownAgentIds;
+  if (!knownAgentIds) {
+    try {
+      const client = createEnsClient(options.ensRpcUrl);
+      const raw = await getTextRecord(client, ens, "agent-ids");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (
+          Array.isArray(parsed) &&
+          parsed.every((x) => typeof x === "string")
+        ) {
+          knownAgentIds = parsed;
+        }
+      }
+    } catch {
+      // missing or malformed — fall through, resolver returns identity:false
+    }
+  }
+  return cachedResolveTrustProfile(ens, { ...options, knownAgentIds });
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/gate (TRU-34)
@@ -91,7 +125,7 @@ export async function POST(req: Request) {
     recipientProfile = await resolveWithSubnameInheritance(
       body.recipientEns,
       { ensRpcUrl },
-      (ens, ro) => cachedResolveTrustProfile(ens, ro ?? {}),
+      (ens, ro) => resolveWithAutoAgentIds(ens, ro ?? {}),
     );
   } catch (err) {
     return jsonError(
@@ -122,7 +156,7 @@ export async function POST(req: Request) {
       const sp = await resolveWithSubnameInheritance(
         body.callerEns,
         { ensRpcUrl },
-        (ens, ro) => cachedResolveTrustProfile(ens, ro ?? {}),
+        (ens, ro) => resolveWithAutoAgentIds(ens, ro ?? {}),
       );
       swapperTier = sp.trustScore as Tier;
     } catch {
