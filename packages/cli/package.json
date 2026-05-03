@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@namera-ai/sdk": "^0.1.0",
-    "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
+    "@synthesis/resolver": "file:../../vendor/synthesis-resolver",
     "@trust-swap/core": "workspace:*",
     "@zerodev/multi-chain-ecdsa-validator": "^5.4.5",
     "@zerodev/permissions": "^5.6.3",

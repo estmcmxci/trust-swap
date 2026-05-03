@@ -21,7 +21,7 @@
     "format": "biome format --write ."
   },
   "dependencies": {
-    "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
+    "@synthesis/resolver": "file:../../vendor/synthesis-resolver",
     "@trust-swap/core": "workspace:*",
     "hono": "^4.6.0",
     "viem": "^2.33.3",

@@ -21,7 +21,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
+    "@synthesis/resolver": "file:../../vendor/synthesis-resolver",
     "viem": "^2.33.3",
     "zod": "^3.24.2"
   },

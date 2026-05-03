@@ -11,7 +11,7 @@
     "lint": "biome lint --write ."
   },
   "dependencies": {
-    "@synthesis/resolver": "file:../../../synthesis/packages/resolver",
+    "@synthesis/resolver": "file:../../vendor/synthesis-resolver",
     "@trust-swap/core": "workspace:*",
     "next": "^15.0.0",
     "react": "^19.0.0",
