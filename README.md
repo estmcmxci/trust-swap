@@ -16,9 +16,14 @@ Five primitives compose, each doing one job:
 
 The router enforces the *intersection* of (router floor, swapper's tier-derived terms, recipient's published RiskPolicy). Most restrictive wins. Tier `none` is the only outright admission denial — every other tier is admitted with graded terms.
 
-## Status
+## Live evidence
 
-**Phase −1.B (scaffold).** See [`PLAN.md`](./PLAN.md) for the full execution plan and current phase.
+<!-- LIVE_DEMO_BULLET -->
+- **Headline transaction (Base):** [`0xfe6f2308…`](https://basescan.org/tx/0xfe6f2308701fc19074fa84304efcb6dbd5e4cb14e06d91e91028e471a23a88f5) — `daemon.emilemarcelagustin.eth` peer-fulfilled `daemon.trustrust.eth`'s swap intent end-to-end without human input.
+- **JSONL captures:** [`infra/demo-runs/phase-6/`](./infra/demo-runs/phase-6/) — paired allow + deny lifecycle events with a README explaining the five gate checks.
+- **ENS records (mainnet):** [`daemon.emilemarcelagustin.eth`](https://app.ens.domains/daemon.emilemarcelagustin.eth) and [`daemon.trustrust.eth`](https://app.ens.domains/daemon.trustrust.eth) — published `agent-risk-policy`, `agent-version-lineage`, `agent-latest`, `agent-ids`, `agent-endpoint`, `addr`.
+- **Spec:** [`spec/trust-graded-swap.md`](./spec/trust-graded-swap.md).
+- **Replay locally:** `cat infra/demo-runs/phase-6/allow-2026-05-02.jsonl | jq -c .` shows the full peer-fulfillment lifecycle. Agent endpoints live on Tailscale-private IPs by design (Phase 6c lockdown — only daemon peers can reach `/intents`); see [`infra/droplet/install.sh`](./infra/droplet/install.sh).
 
 The companion synthesis Trust Resolution Layer ([`@synthesis/resolver@0.2.0`](https://github.com/estmcmxci/synthesis/tree/main/packages/resolver)) ships the `gate()` policy primitive and `Signer` interface this app composes against — see the [trust-policy spec](https://github.com/estmcmxci/synthesis/blob/main/spec/trust-policy.md).
 

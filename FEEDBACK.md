@@ -472,6 +472,128 @@ fields alongside `gasFeeUSD`.
 
 ---
 
+## Phase 6 follow-up — A2A peer-fulfillment with the Trading API in the loop (2026-05-02)
+
+Phase 3 verified the oracle against a single bidirectional swap.
+Phase 6 took the same surface and wired it into a two-agent
+peer-fulfillment loop, both agents identified by ENS, both publishing
+their own RiskPolicy, both running unattended on Base mainnet. The
+headline result is one transaction:
+
+> [`0xfe6f2308…23a88f5`](https://basescan.org/tx/0xfe6f2308701fc19074fa84304efcb6dbd5e4cb14e06d91e91028e471a23a88f5)
+> — `daemon.emilemarcelagustin.eth` peer-fulfilled
+> `daemon.trustrust.eth`'s `drip-usdc-to-weth` intent (0.1 USDC → WETH,
+> delivered to the recipient's `addr()`), end-to-end without human
+> input.
+
+The Trading API call sat *inside* the gated router, after the oracle
+had already attested both sides' RiskPolicies, so it composed exactly
+the same way it did in Phase 2. Below is what we observed when we
+pushed the same surface into the A2A flow.
+
+### Trading API surface was unchanged from Phase 2 → Phase 6
+
+This was the surprise — and the validation. The lifecycle inside the
+peer-fulfilling agent is:
+
+1. Discover via ENSIP-26 `agent-endpoint`, fetch peer's advertised
+   intents.
+2. Match against local `enabledIntents`, run the gate.
+3. On `decision: allow`, `quote → swap` against the Trading API,
+   broadcast through `TrustSwapRouter`.
+
+Step 3 used the same `routing: "CLASSIC"`, the same `tokenIn` /
+`tokenOut` shape as the strings (chain IDs as strings, addresses
+checksummed), the same `permitData` omission, the same `swap.data` →
+low-level `call` pattern. **Zero API-shape changes were needed to lift
+TrustSwap from "wallet-driven swap" to "agent-to-agent
+peer-fulfillment."** That's the test you actually want to run for an
+API targeting agents — does the same call work when one agent makes it
+on behalf of itself, on behalf of another, or after a 5-gate
+verification on both sides? In our case, yes.
+
+### Bidirectional `acceptedTokens` is the new constraint to think about
+
+A peer-fulfiller transiently *receives* the output token before
+forwarding to the requester (well — the router does, atomically). When
+both sides publish a RiskPolicy with `acceptedTokens`, the gate has to
+satisfy *both directions*:
+
+- Recipient's `acceptedTokens` must include `tokenIn` (the requester
+  receives the funded leg).
+- Swapper's `acceptedTokens` must include `tokenOut` (the
+  peer-fulfiller receives the swapped leg).
+
+Our daemon-1 RiskPolicy initially listed only `[USDC]`. The oracle
+correctly denied with:
+
+```
+swapper accepts: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
+```
+
+…meaning daemon-1's accept-list was missing WETH. Extending to `[USDC,
+WETH]` cleared the gate. **This is a pure RiskPolicy schema concern —
+the Trading API response was identical.** But it's the kind of thing
+an `acceptedTokens` field on the API surface (or a server-side hint
+like "this swap requires recipient.accepts(tokenIn) ∧
+swapper.accepts(tokenOut)") would flag earlier.
+
+### ENS finalization lag in the oracle (~32 blocks)
+
+The oracle reads ENS text records at `blockTag: finalized` to make
+attestation reproducible — every replay reads the same record from the
+same block height. The cost: a fresh `setText` is invisible to the
+oracle for ~32 blocks (roughly 6 minutes on Base/L1).
+
+We hit this twice in Phase 6:
+
+1. After repointing daemon.trustrust.eth's `addr()` from the kernel to
+   the owner EOA so manifest signature recovery succeeded.
+2. After extending daemon-1's `acceptedTokens` to include WETH.
+
+Both were one-line `ensemble edit txt` calls. Both required waiting
+~6 min before re-running the agent loop. **Tooling candidate:**
+client-side finality detection (poll until `getText(finalized) ===
+getText(latest)`), or a `?freshness=latest` opt-in on read paths
+where the caller accepts re-org risk in exchange for liveness. We
+default to finalized for replay determinism but the UX cost is real
+when iterating policy.
+
+### What this exercise proved about the Trading API for agents
+
+Two-agent flow stresses every assumption single-wallet flow lets you
+skip:
+
+- **The router contract has to mediate** — neither agent's wallet
+  controls the swap path; the router enforces oracle-attested terms
+  before forwarding to Universal Router. The `swap.data` →
+  low-level `call` pattern absorbed this with no Trading API changes.
+- **Both sides need queryable trust metadata** — we put it on ENS
+  text records (`agent-risk-policy`, `agent-version-lineage`, etc.).
+  Trading API consumers who want this today will end up doing the
+  same.
+- **Settlement must be deterministic across replays** — finalized-tag
+  ENS reads + oracle attestation gave us this; the Trading API's
+  `quote → swap` surface was incidentally helpful here because
+  `swap.data` is a calldata snapshot, not a stateful session.
+
+The structural ask we filed in the original FEEDBACK still applies:
+**a Trading API that resolves ENS server-side and emits identity
+metadata in the swap response would make every consumer's
+attestation layer thinner.** Phase 6 didn't change that ask — it
+sharpened it. We're now running two agents that depend on this exact
+gap being filled outside the API; doing the resolution at the gateway
+would collapse our oracle's read surface by half.
+
+### Live evidence
+
+- Headline tx: [`0xfe6f2308…`](https://basescan.org/tx/0xfe6f2308701fc19074fa84304efcb6dbd5e4cb14e06d91e91028e471a23a88f5)
+- JSONL captures: [`infra/demo-runs/phase-6/`](./infra/demo-runs/phase-6/) — paired allow + deny lifecycle events; the README enumerates the 5 gates.
+- Both agents' ENS records: [`daemon.emilemarcelagustin.eth`](https://app.ens.domains/daemon.emilemarcelagustin.eth), [`daemon.trustrust.eth`](https://app.ens.domains/daemon.trustrust.eth).
+- Upstream synthesis fixes that unblocked the demo: [synthesis #39](https://github.com/estmcmxci/synthesis/issues/39) (CLI/resolver ENSIP-25 encoder unify) + [#41](https://github.com/estmcmxci/synthesis/issues/41) (resolver checks `addr()` instead of registry owner for manifest signature).
+
+---
+
 ## Closing thought
 
 The Trading API is the right product. The footguns are mostly shape
