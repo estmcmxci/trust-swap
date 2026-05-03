@@ -25,3 +25,5 @@ trust-swap-backups/
 .claude/
 vendor/synthesis-resolver/node_modules/
 packages/site/.vercel/
+.vercel
+.env*.local
