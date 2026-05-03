@@ -18,7 +18,7 @@ The router enforces the *intersection* of (router floor, swapper's tier-derived 
 
 ## Live evidence
 
-<!-- LIVE_DEMO_BULLET -->
+- **Live demo:** [`trust-swap-roan.vercel.app/swap`](https://trust-swap-roan.vercel.app/swap) — type `daemon.trustrust.eth` to see the live on-chain trust card (TRL identity → finalized RiskPolicy → 5-gate decision). Preview only; no broadcast.
 - **Headline transaction (Base):** [`0xfe6f2308…`](https://basescan.org/tx/0xfe6f2308701fc19074fa84304efcb6dbd5e4cb14e06d91e91028e471a23a88f5) — `daemon.emilemarcelagustin.eth` peer-fulfilled `daemon.trustrust.eth`'s swap intent end-to-end without human input.
 - **JSONL captures:** [`infra/demo-runs/phase-6/`](./infra/demo-runs/phase-6/) — paired allow + deny lifecycle events with a README explaining the five gate checks.
 - **ENS records (mainnet):** [`daemon.emilemarcelagustin.eth`](https://app.ens.domains/daemon.emilemarcelagustin.eth) and [`daemon.trustrust.eth`](https://app.ens.domains/daemon.trustrust.eth) — published `agent-risk-policy`, `agent-version-lineage`, `agent-latest`, `agent-ids`, `agent-endpoint`, `addr`.
